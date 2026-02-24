@@ -5,6 +5,7 @@ edition = "2024"
 description = "A streamable, readable, writeable, randomly accessible file format"
 license = "Apache-2.0"
 homepage = "https://github.com/nosqlbench/slabtastic-rs"
+repository = "https://github.com/nosqlbench/slabtastic-rs"
 readme = "README.md"
 keywords = ["vector", "dataset", "ann", "testing", "automation"]
 categories = ["filesystem", "network-programming", "science"]
