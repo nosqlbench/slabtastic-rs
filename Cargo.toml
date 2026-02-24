@@ -1,0 +1,25 @@
+[package]
+name = "slabtastic"
+version = "0.1.0"
+edition = "2024"
+description = "A streamable, readable, writeable, randomly accessible file format"
+license = "Apache-2.0"
+homepage = "https://github.com/nosqlbench/slabtastic-rs"
+readme = "README.md"
+keywords = ["vector", "dataset", "ann", "testing", "automation"]
+categories = ["filesystem", "network-programming", "science"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "slab"
+path = "src/main.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+[[bench]]
+name = "throughput"
+harness = false
