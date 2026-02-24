@@ -17,6 +17,22 @@
 //!   spawns a background thread that consumes an iterator of records,
 //!   writes them to a new file, and provides a [`SlabTask`]
 //!   handle for progress polling.
+//!
+//! ## Flush-at-boundaries requirement
+//!
+//! The writer only issues writes of complete, serialized pages — it
+//! never writes a partial page buffer. However, `write_all` does **not**
+//! guarantee OS-level atomicity: a concurrent reader may observe a
+//! partially-written page on disk. Readers must therefore validate each
+//! candidate page's `[magic][size]` header against the observed file
+//! size before reading the page body. See the
+//! [concurrency model](../docs/explanation/concurrency.md) for details.
+//!
+//! ## Record-too-large
+//!
+//! In v1, a single record that exceeds the configured maximum page
+//! capacity is rejected with [`SlabError::RecordTooLarge`].
+//! There is no multi-page spanning for individual records.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

@@ -6,6 +6,26 @@
 //! Each page is a self-contained blob with header, packed record data,
 //! an offset array, and a footer. Pages can be serialized and
 //! deserialized independently.
+//!
+//! ## Record offset calculation
+//!
+//! From the end of the page: back up `footer_length` bytes to reach the
+//! end of the offset array, then back up `4 * (record_count + 1)` bytes
+//! to reach the first offset. Each offset is a little-endian `u32`
+//! measured from the **start of the page**, so the first record always
+//! begins at byte 8 (after the 8-byte header).
+//!
+//! ## Size constraints
+//!
+//! Page sizes range from 2^9 (512 bytes) to 2^32 bytes. A single record
+//! that would exceed the maximum page size is an error in v1 — see
+//! [`SlabError::RecordTooLarge`].
+//!
+//! ## Bidirectional traversal
+//!
+//! Both header and footer carry the page size, so a file can be
+//! traversed **forward** (header → next page) and **backward** (footer →
+//! previous page) without consulting the pages page index.
 
 use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, MAGIC, PageType};
 use crate::error::{Result, SlabError};

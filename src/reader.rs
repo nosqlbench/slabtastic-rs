@@ -14,6 +14,25 @@
 //!   data sequentially to any [`std::io::Write`] sink. For background
 //!   execution with progress polling, use the associated function
 //!   [`SlabReader::read_to_sink_async`].
+//!
+//! ## Sparse ordinals
+//!
+//! Ordinal ranges need not be contiguous — a file may have gaps between
+//! pages (e.g. ordinals 0–99 and 200–299 with nothing in between). This
+//! coarse chunk-level sparsity supports step-wise incremental changes.
+//! Requesting an ordinal that falls in a gap returns
+//! [`SlabError::OrdinalNotFound`].
+//!
+//! ## Concurrent / incremental reading
+//!
+//! Multiple readers may open the same file concurrently, each with its
+//! own file descriptor. A reader may also observe an actively-written
+//! file incrementally by validating each page's `[magic][size]` header
+//! before reading it. However, the reader must not assume atomic writes;
+//! pages should only be read once their header confirms they are fully
+//! written. This incremental mode is inherently optimistic and should
+//! only be used when the writer is streaming an immutable version of
+//! the data.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

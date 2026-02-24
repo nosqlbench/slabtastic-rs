@@ -5,6 +5,21 @@
 //!
 //! Every slabtastic page ends with a fixed-size footer that carries all
 //! metadata needed to interpret the page without external context.
+//!
+//! ## Version evolution
+//!
+//! The footer format is **page-specific**: each page carries its own
+//! version tag, so a single file may contain pages written by different
+//! format versions as long as each reader recognises the versions
+//! present. The current implementation supports only v1 (16-byte footer).
+//! Readers **must** verify the version field before interpreting a page;
+//! an unrecognised version produces [`SlabError::InvalidVersion`].
+//!
+//! ## v1 capacity limits
+//!
+//! The 16-byte v1 footer encodes the start ordinal in 5 bytes (range
+//! ±2^39 ≈ ±549 billion) and the record count in 3 bytes (max 2^24 − 1
+//! = 16,777,215 records per page).
 
 use crate::constants::{FOOTER_V1_SIZE, PageType, VERSION_1};
 use crate::error::{Result, SlabError};

@@ -5,6 +5,20 @@
 //!
 //! These constants define the structural invariants shared by all pages:
 //! magic bytes, header/footer sizes, page size limits, and version tags.
+//!
+//! ## File capacity
+//!
+//! Slabtastic supports files of up to 2^63 bytes. All file-level offsets
+//! are twos-complement signed 8-byte little-endian integers for easy
+//! interop with language stacks that lack unsigned 64-bit types.
+//!
+//! ## Page size bounds
+//!
+//! Pages must be between 2^9 (512) and 2^32 bytes. The 512-byte minimum
+//! ensures pages are large enough to hold the header, at least one
+//! offset entry, and the footer. The 2^32 upper limit keeps page sizes
+//! addressable by a 4-byte field and within single `mmap` call limits on
+//! older Java runtimes.
 
 /// Magic bytes identifying a slabtastic page: ASCII "SLAB".
 ///

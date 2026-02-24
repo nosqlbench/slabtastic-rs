@@ -6,6 +6,11 @@
 //! A streamable, random-accessible, appendable data layout format for
 //! non-uniform data by ordinal.
 //!
+//! ## File capacity
+//!
+//! Slabtastic supports files of up to 2^63 bytes. All file-level offsets
+//! are twos-complement signed 8-byte little-endian integers.
+//!
 //! ## Format overview
 //!
 //! A slabtastic file (conventionally using the `.slab` extension — see
@@ -57,7 +62,18 @@
 //!
 //! Ordinal ranges need not be contiguous. A file may have gaps between
 //! pages (e.g. ordinals 0–99 and 200–299 with nothing in between).
-//! Requesting a missing ordinal returns [`SlabError::OrdinalNotFound`].
+//! This coarse chunk-level sparsity supports step-wise incremental
+//! changes without rewriting existing pages. Requesting a missing
+//! ordinal returns [`SlabError::OrdinalNotFound`].
+//!
+//! ## Interior mutation
+//!
+//! While not the primary use case, interior records can be mutated in
+//! place when the replacement data fits within the existing record
+//! boundaries — e.g. self-terminating formats (null-terminated strings)
+//! or fixed-size values (32-bit integers). For more substantial
+//! revisions, append a new data page and rewrite the pages page to
+//! reference it instead of the original.
 //!
 //! ## Quick-start example
 //!

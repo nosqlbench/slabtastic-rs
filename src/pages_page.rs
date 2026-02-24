@@ -8,6 +8,24 @@
 //! `(start_ordinal:8, file_offset:8)` — sorted by ordinal to support
 //! O(log₂ n) binary-search lookup via [`PagesPage::find_page_for_ordinal`].
 //!
+//! ## Constraints
+//!
+//! - **Single-page requirement**: the pages page must fit in a single
+//!   page, which puts a hard upper bound on the number of data pages in
+//!   a v1 file (page capacity / 16 bytes per entry).
+//! - **Authoritative last page**: a valid slabtastic file always ends
+//!   with a pages page. The last pages page in the file is authoritative;
+//!   earlier pages pages are logically dead.
+//! - **Logical deletion**: data pages not referenced by the pages page
+//!   are logically deleted and must not be used by readers.
+//!
+//! ## Ordering
+//!
+//! Entries are sorted by `start_ordinal` for binary search. However,
+//! the underlying data pages they reference are **not** required to
+//! appear in monotonic file-offset order — pages may be out of order on
+//! disk when append-only revisions rewrite earlier ordinal ranges.
+//!
 //! ## Examples
 //!
 //! ```
