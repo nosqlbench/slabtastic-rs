@@ -33,6 +33,8 @@ pub enum SlabError {
     RecordTooLarge { record_size: usize, max_size: usize },
     /// The requested ordinal is not present in the file.
     OrdinalNotFound(i64),
+    /// The caller-specified ordinal does not match the writer's next expected ordinal.
+    OrdinalMismatch { expected: i64, actual: i64 },
     /// The footer data is malformed.
     InvalidFooter(String),
     /// The page data is truncated or incomplete.
@@ -60,6 +62,9 @@ impl fmt::Display for SlabError {
                 "record size {record_size} exceeds max page capacity {max_size}"
             ),
             SlabError::OrdinalNotFound(o) => write!(f, "ordinal {o} not found"),
+            SlabError::OrdinalMismatch { expected, actual } => {
+                write!(f, "ordinal mismatch: expected {expected}, got {actual}")
+            }
             SlabError::InvalidFooter(msg) => write!(f, "invalid footer: {msg}"),
             SlabError::TruncatedPage { expected, actual } => {
                 write!(f, "truncated page: expected {expected} bytes, got {actual}")

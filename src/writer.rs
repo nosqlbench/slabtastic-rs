@@ -218,6 +218,23 @@ impl SlabWriter {
         Ok(())
     }
 
+    /// Add a record, verifying that its ordinal matches the next expected
+    /// ordinal.
+    ///
+    /// This is identical to [`add_record`](Self::add_record) except that
+    /// the caller specifies the ordinal they expect. If `ordinal` does not
+    /// equal [`next_ordinal`](Self::next_ordinal), the call fails with
+    /// [`SlabError::OrdinalMismatch`] and nothing is written.
+    pub fn add_record_at(&mut self, ordinal: i64, data: &[u8]) -> Result<()> {
+        if ordinal != self.next_ordinal {
+            return Err(SlabError::OrdinalMismatch {
+                expected: self.next_ordinal,
+                actual: ordinal,
+            });
+        }
+        self.add_record(data)
+    }
+
     /// Add multiple records in one call, flushing pages as needed.
     ///
     /// This is semantically equivalent to calling [`add_record`](Self::add_record)
@@ -227,6 +244,23 @@ impl SlabWriter {
             self.add_record(data)?;
         }
         Ok(())
+    }
+
+    /// Add multiple records, verifying that the first record's ordinal
+    /// matches the next expected ordinal.
+    ///
+    /// If `start_ordinal` does not equal [`next_ordinal`](Self::next_ordinal),
+    /// the call fails with [`SlabError::OrdinalMismatch`] and nothing is
+    /// written. On success, records are assigned ordinals
+    /// `start_ordinal .. start_ordinal + records.len()`.
+    pub fn add_records_at(&mut self, start_ordinal: i64, records: &[&[u8]]) -> Result<()> {
+        if start_ordinal != self.next_ordinal {
+            return Err(SlabError::OrdinalMismatch {
+                expected: self.next_ordinal,
+                actual: start_ordinal,
+            });
+        }
+        self.add_records(records)
     }
 
     /// Spawn a background thread that creates a new slabtastic file at
@@ -324,6 +358,11 @@ impl SlabWriter {
         self.current_page = Page::new(self.next_ordinal, PageType::Data);
 
         Ok(())
+    }
+
+    /// Return the ordinal that will be assigned to the next record added.
+    pub fn next_ordinal(&self) -> i64 {
+        self.next_ordinal
     }
 
     /// Finish writing: flush the pending page and write the pages page.
@@ -443,5 +482,90 @@ mod tests {
         for (i, expected) in records.iter().enumerate() {
             assert_eq!(reader.get(i as i64).unwrap(), *expected);
         }
+    }
+
+    /// add_record_at succeeds when the ordinal matches next_ordinal.
+    #[test]
+    fn test_add_record_at_correct_ordinal() {
+        use crate::reader::SlabReader;
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let mut w = SlabWriter::new(&path, WriterConfig::default()).unwrap();
+        assert_eq!(w.next_ordinal(), 0);
+        w.add_record_at(0, b"zero").unwrap();
+        assert_eq!(w.next_ordinal(), 1);
+        w.add_record_at(1, b"one").unwrap();
+        w.add_record_at(2, b"two").unwrap();
+        w.finish().unwrap();
+
+        let mut r = SlabReader::open(&path).unwrap();
+        assert_eq!(r.get(0).unwrap(), b"zero");
+        assert_eq!(r.get(1).unwrap(), b"one");
+        assert_eq!(r.get(2).unwrap(), b"two");
+    }
+
+    /// add_record_at fails with OrdinalMismatch when the ordinal is wrong.
+    #[test]
+    fn test_add_record_at_wrong_ordinal() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let mut w = SlabWriter::new(&path, WriterConfig::default()).unwrap();
+        w.add_record(b"first").unwrap();
+
+        match w.add_record_at(5, b"wrong") {
+            Err(SlabError::OrdinalMismatch {
+                expected: 1,
+                actual: 5,
+            }) => {}
+            other => panic!("expected OrdinalMismatch, got {other:?}"),
+        }
+
+        // Writer state is unchanged — next_ordinal is still 1
+        assert_eq!(w.next_ordinal(), 1);
+        w.add_record_at(1, b"correct").unwrap();
+        w.finish().unwrap();
+    }
+
+    /// add_records_at succeeds when start_ordinal matches.
+    #[test]
+    fn test_add_records_at_correct_ordinal() {
+        use crate::reader::SlabReader;
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let mut w = SlabWriter::new(&path, WriterConfig::default()).unwrap();
+        w.add_record(b"zero").unwrap();
+        w.add_records_at(1, &[b"one", b"two", b"three"]).unwrap();
+        assert_eq!(w.next_ordinal(), 4);
+        w.finish().unwrap();
+
+        let mut r = SlabReader::open(&path).unwrap();
+        assert_eq!(r.get(0).unwrap(), b"zero");
+        assert_eq!(r.get(1).unwrap(), b"one");
+        assert_eq!(r.get(3).unwrap(), b"three");
+    }
+
+    /// add_records_at fails with OrdinalMismatch when start_ordinal is wrong.
+    #[test]
+    fn test_add_records_at_wrong_ordinal() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let mut w = SlabWriter::new(&path, WriterConfig::default()).unwrap();
+
+        match w.add_records_at(10, &[b"a", b"b"]) {
+            Err(SlabError::OrdinalMismatch {
+                expected: 0,
+                actual: 10,
+            }) => {}
+            other => panic!("expected OrdinalMismatch, got {other:?}"),
+        }
+
+        // Nothing was written
+        assert_eq!(w.next_ordinal(), 0);
     }
 }
