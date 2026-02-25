@@ -43,3 +43,7 @@ Design decisions and architectural context.
 - [Append-Only Semantics](explanation/append-only.md)
 - [Sparse Ordinals and Interior Mutation](explanation/sparse-ordinals.md)
 - [Concurrency Model](explanation/concurrency.md)
+
+## Benchmarks
+
+See [critcmp.md](../critcmp.md) for throughput numbers (NVMe).

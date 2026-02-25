@@ -56,7 +56,7 @@ intermediate buffering:
 use slabtastic::SlabReader;
 
 fn sink_read(path: &str) -> slabtastic::Result<()> {
-    let mut reader = SlabReader::open(path)?;
+    let reader = SlabReader::open(path)?;
     let mut sink = Vec::new();
     let count = reader.read_all_to_sink(&mut sink)?;
     println!("Read {count} records ({} bytes)", sink.len());

@@ -49,7 +49,7 @@ use slabtastic::SlabReader;
 use std::fs::File;
 
 fn main() -> slabtastic::Result<()> {
-    let mut reader = SlabReader::open("data.slab")?;
+    let reader = SlabReader::open("data.slab")?;
     let mut output = File::create("all_records.bin")?;
     let count = reader.read_all_to_sink(&mut output)?;
     println!("Wrote {count} records to all_records.bin");

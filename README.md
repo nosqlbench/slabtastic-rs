@@ -10,9 +10,8 @@ non-uniform data by ordinal.
 Slabtastic stores variable-length records in self-describing **pages**,
 with a trailing **pages page** that indexes every data page by ordinal.
 New pages can be appended without rewriting existing data. The result is a
-single `.slab` file that supports O(log n) random access, sequential
-streaming, and incremental append -- with zero runtime dependencies beyond
-the Rust standard library.
+single `.slab` file that supports O(1) random access (via mmap +
+interpolation search), sequential streaming, and incremental append.
 
 ## Quick start
 
@@ -25,17 +24,23 @@ w.add_record(b"hello")?;
 w.add_record(b"world")?;
 w.finish()?;
 
-// Read
-let mut r = SlabReader::open("demo.slab")?;
-assert_eq!(r.get(0)?, b"hello");
-assert_eq!(r.get(1)?, b"world");
+// Read (zero-copy)
+let r = SlabReader::open("demo.slab")?;
+assert_eq!(r.get_ref(0)?, b"hello");
+assert_eq!(r.get_ref(1)?, b"world");
 ```
 
 ## Features
 
-**Reading** -- three access modes:
+**Reading** -- the file is memory-mapped at open time. All reader methods
+take `&self`, so a single `SlabReader` can be shared freely. Four access
+modes:
 
-- **Point get** -- fetch a single record by ordinal in O(log n).
+- **Zero-copy get** -- `get_ref(ordinal)` returns a `&[u8]` slice
+  directly into the mmap. O(1) expected (interpolation search), zero
+  allocation, zero syscalls.
+- **Copying get** -- `get(ordinal)` and `get_into(ordinal, &mut buf)`
+  copy the record bytes into owned memory.
 - **Batched iteration** -- `batch_iter(batch_size)` yields records in
   configurable-size batches. An empty batch signals exhaustion.
 - **Sink read** -- `read_all_to_sink()` streams all records to any

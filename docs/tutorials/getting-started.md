@@ -10,7 +10,7 @@ using the CLI to inspect the result.
 
 ```toml
 [dependencies]
-slabtastic = "0.1"
+slabtastic = "0.3"
 ```
 
 ## Step 1: Write a slab file
@@ -52,11 +52,13 @@ Open the file and fetch individual records by their zero-based ordinal:
 use slabtastic::SlabReader;
 
 fn main() -> slabtastic::Result<()> {
-    let mut reader = SlabReader::open("demo.slab")?;
+    let reader = SlabReader::open("demo.slab")?;
 
-    let first = reader.get(0)?;
-    println!("ordinal 0: {}", String::from_utf8_lossy(&first));
+    // Zero-copy: get_ref returns a &[u8] slice into the mmap
+    let first = reader.get_ref(0)?;
+    println!("ordinal 0: {}", String::from_utf8_lossy(first));
 
+    // Copying: get returns an owned Vec<u8>
     let second = reader.get(1)?;
     println!("ordinal 1: {}", String::from_utf8_lossy(&second));
 
@@ -76,7 +78,7 @@ Use `iter()` to read every record in ordinal order:
 use slabtastic::SlabReader;
 
 fn main() -> slabtastic::Result<()> {
-    let mut reader = SlabReader::open("demo.slab")?;
+    let reader = SlabReader::open("demo.slab")?;
     let all = reader.iter()?;
 
     for (ordinal, data) in &all {
@@ -93,7 +95,7 @@ The `slab` binary provides file maintenance commands:
 
 ```bash
 # Show file structure and statistics
-slab info demo.slab
+slab analyze demo.slab
 
 # Retrieve specific records
 slab get demo.slab 0 1 2

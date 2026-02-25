@@ -5,7 +5,7 @@
 We needed a format for organising non-uniform data by ordinal that
 supports:
 
-1. **Random access** — fetch any record by ordinal in O(log n).
+1. **Random access** — fetch any record by ordinal in O(1) expected time.
 2. **Streaming reads** — iterate all records sequentially without loading
    the entire file.
 3. **Append-only writes** — add new data without rewriting existing pages.
@@ -39,6 +39,10 @@ Slabtastic keeps the index **inside** the file as the trailing pages
 are added. New data pages can be appended and a fresh pages page written
 without modifying any existing page. The format stays close to the metal:
 
+- The file is memory-mapped at open time; point gets issue zero syscalls.
+- Interpolation search over the page index finds the target page in
+  O(1) expected probes (1–2 for uniform distributions).
+- Zero-copy `get_ref()` returns a `&[u8]` directly into the mmap.
 - Pages are self-describing (header + footer carry all metadata).
 - Record offsets are flat arrays — no pointer chasing.
 - Forward and backward traversal are both possible without the index.

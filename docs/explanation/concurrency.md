@@ -3,8 +3,13 @@
 ## Multiple readers
 
 Multiple `SlabReader` instances can open the same file concurrently, each
-with its own file descriptor. There is no shared state between readers and
-no locking is required.
+with its own file descriptor and memory map. There is no shared state
+between readers and no locking is required.
+
+All `SlabReader` methods take `&self` (not `&mut self`), so a single reader
+can also be shared across threads via `Arc<SlabReader>` without any mutex.
+Point gets (`get_ref`, `get`, `get_into`) are zero-syscall operations that
+read directly from the mmap.
 
 This is the common production pattern: several threads or processes read
 the same slab file independently.

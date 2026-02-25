@@ -18,8 +18,9 @@ Each record in the pages page is a 16-byte tuple:
 
 ## Ordering
 
-Entries are sorted by `start_ordinal` to enable O(log2 n) binary-search
-lookup of any ordinal to its containing data page.
+Entries are sorted by `start_ordinal` to enable fast lookup of any ordinal
+to its containing data page. The reader uses interpolation search (O(1)
+expected for uniform distributions) with a binary-search fallback.
 
 The data pages themselves are **not** required to appear in monotonic
 file-offset order. After append operations, newer pages may reference
@@ -57,10 +58,15 @@ See also: [Namespaces Page](namespaces-page.md).
 
 To find the page containing ordinal `o`:
 
-1. Binary search the entries for the largest `start_ordinal <= o`.
+1. **Interpolation search** the entries for the largest
+   `start_ordinal <= o`. For uniform ordinal distributions (the common
+   case) this finds the page in 1–2 probes. A bounded linear scan
+   (±4 entries) handles minor non-uniformity; if the scan misses, a
+   standard binary search fallback runs in O(log₂ n).
 2. If no such entry exists, the ordinal is in a gap (sparse) — return
    `OrdinalNotFound`.
-3. Read the data page at the entry's `file_offset`.
+3. Look up the record via cached per-page metadata and the mmap (zero
+   syscalls, zero allocation with `get_ref`).
 4. Compute `local_index = o - start_ordinal`. If `local_index >=
    record_count`, the ordinal falls past the end of this page — return
    `OrdinalNotFound`.
