@@ -15,6 +15,19 @@
 //!   execution with progress polling, use the associated function
 //!   [`SlabReader::read_to_sink_async`].
 //!
+//! ## Performance
+//!
+//! The file is memory-mapped at open time. Point gets use interpolation
+//! search over a pre-built page index with cached per-page metadata
+//! (page_size, record_count), so a `get()` call performs:
+//!
+//! 1. **Interpolation search** — O(1) expected for uniform ordinal
+//!    distributions (~1–2 probes vs ~12 for binary search).
+//! 2. **Two memory loads** — offset-pair lookup from the mmap.
+//! 3. **One memcpy** — record bytes from the mmap into the output buffer.
+//!
+//! Zero syscalls per get. All data is accessed directly through the mmap.
+//!
 //! ## Sparse ordinals
 //!
 //! Ordinal ranges need not be contiguous — a file may have gaps between
@@ -26,17 +39,21 @@
 //! ## Concurrent / incremental reading
 //!
 //! Multiple readers may open the same file concurrently, each with its
-//! own file descriptor. A reader may also observe an actively-written
-//! file incrementally by validating each page's `[magic][size]` header
-//! before reading it. However, the reader must not assume atomic writes;
-//! pages should only be read once their header confirms they are fully
-//! written. This incremental mode is inherently optimistic and should
-//! only be used when the writer is streaming an immutable version of
-//! the data.
+//! own file descriptor and mmap. A reader may also observe an
+//! actively-written file incrementally by validating each page's
+//! `[magic][size]` header before reading it. However, the reader must
+//! not assume atomic writes; pages should only be read once their header
+//! confirms they are fully written. This incremental mode is inherently
+//! optimistic and should only be used when the writer is streaming an
+//! immutable version of the data.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use memmap2::Mmap;
+#[cfg(unix)]
+use memmap2::Advice;
 
 use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, PageType};
 use crate::error::{Result, SlabError};
@@ -44,6 +61,23 @@ use crate::footer::Footer;
 use crate::page::Page;
 use crate::pages_page::{PageEntry, PagesPage};
 use crate::task::{self, SlabTask};
+
+/// Cached per-page metadata built at open time.
+///
+/// Stores the page geometry (size, record count) alongside the
+/// pages-page entry so that [`SlabReader::get_into`] can locate a
+/// record's bytes without any per-call I/O parsing.
+#[derive(Debug, Clone, Copy)]
+struct PageIndexEntry {
+    /// Starting ordinal for this page.
+    start_ordinal: i64,
+    /// Byte offset of this page within the file.
+    file_offset: u64,
+    /// Total page size in bytes (from the page header).
+    page_size: u32,
+    /// Number of records in this page (from the page footer).
+    record_count: u32,
+}
 
 /// Reads slabtastic files, supporting random access by ordinal,
 /// batched iteration, and streaming sink reads.
@@ -59,10 +93,11 @@ use crate::task::{self, SlabTask};
 ///
 /// ## Opening semantics
 ///
-/// [`SlabReader::open`] reads the last 16 bytes of the file to locate
-/// the pages page footer, then reads the full pages page to build the
-/// index. If the file is truncated or does not end with a pages page,
-/// an error is returned.
+/// [`SlabReader::open`] memory-maps the file and reads the trailing pages
+/// page to build the ordinal-to-offset index. Each data page's header and
+/// footer are scanned once to cache page_size and record_count. If the
+/// file is truncated or does not end with a pages page, an error is
+/// returned.
 ///
 /// ## Sparse ordinals
 ///
@@ -87,61 +122,65 @@ use crate::task::{self, SlabTask};
 /// # }
 /// ```
 pub struct SlabReader {
+    /// File handle, kept alive for the mmap and for [`SlabBatchIter`].
     file: File,
+    /// Memory-mapped view of the entire file.
+    mmap: Mmap,
+    /// The deserialized pages page (index of all data pages).
     pages_page: PagesPage,
-    /// Reusable page buffer for bulk operations (iter, read_all_to_sink).
-    /// Avoids per-page allocation during sequential traversal.
-    page_buf: Vec<u8>,
+    /// Pre-built page index with cached per-page metadata, sorted by
+    /// `start_ordinal`. Used by [`get_into`](Self::get_into) for
+    /// zero-syscall, zero-parse record lookup.
+    page_index: Vec<PageIndexEntry>,
 }
 
 impl SlabReader {
     /// Open a slabtastic file for reading.
     ///
-    /// Reads the trailing page to build the ordinal-to-offset index. The
-    /// last page must be either a pages page (type 1) for single-namespace
-    /// files, or a namespaces page (type 3) for multi-namespace files. In
-    /// the latter case the default namespace's pages page is located via
-    /// the namespaces page.
+    /// Memory-maps the file, reads the trailing page to build the
+    /// ordinal-to-offset index, and pre-caches per-page metadata
+    /// (page_size, record_count) for zero-syscall point gets.
+    ///
+    /// The last page must be either a pages page (type 1) for
+    /// single-namespace files, or a namespaces page (type 3) for
+    /// multi-namespace files. In the latter case the default namespace's
+    /// pages page is located via the namespaces page.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut file = File::open(path)?;
+        let file = File::open(path)?;
 
-        let file_len = file.seek(SeekFrom::End(0))?;
-        if file_len < (HEADER_SIZE + FOOTER_V1_SIZE) as u64 {
+        // Safety: the file is opened read-only and we keep the File
+        // handle alive for the lifetime of the Mmap.
+        let mmap = unsafe { Mmap::map(&file).map_err(SlabError::from)? };
+
+        // Hint the kernel to back this mapping with transparent huge pages
+        // (2 MB) where possible, reducing TLB misses for large files.
+        #[cfg(unix)]
+        let _ = mmap.advise(Advice::HugePage);
+
+        let file_len = mmap.len();
+
+        if file_len < HEADER_SIZE + FOOTER_V1_SIZE {
             return Err(SlabError::TruncatedPage {
                 expected: HEADER_SIZE + FOOTER_V1_SIZE,
-                actual: file_len as usize,
+                actual: file_len,
             });
         }
 
         // Read the last 16 bytes for the terminal page footer
-        file.seek(SeekFrom::End(-(FOOTER_V1_SIZE as i64)))?;
-        let mut footer_buf = [0u8; FOOTER_V1_SIZE];
-        file.read_exact(&mut footer_buf)?;
-        let footer = Footer::read_from(&footer_buf)?;
+        let footer = Footer::read_from(&mmap[file_len - FOOTER_V1_SIZE..])?;
 
         if footer.page_type != PageType::Pages && footer.page_type != PageType::Namespaces {
             return Err(SlabError::InvalidPageType(footer.page_type as u8));
         }
 
-        if footer.page_type == PageType::Pages {
+        let pages_page = if footer.page_type == PageType::Pages {
             // Single-namespace file — read the pages page directly
-            let pages_page_offset = file_len - footer.page_size as u64;
-            file.seek(SeekFrom::Start(pages_page_offset))?;
-            let mut pages_buf = vec![0u8; footer.page_size as usize];
-            file.read_exact(&mut pages_buf)?;
-            let pages_page = PagesPage::deserialize(&pages_buf)?;
-            Ok(SlabReader {
-                file,
-                pages_page,
-                page_buf: Vec::new(),
-            })
+            let pp_start = file_len - footer.page_size as usize;
+            PagesPage::deserialize(&mmap[pp_start..file_len])?
         } else {
             // Namespaces page — locate the default namespace's pages page
-            let ns_page_offset = file_len - footer.page_size as u64;
-            file.seek(SeekFrom::Start(ns_page_offset))?;
-            let mut ns_buf = vec![0u8; footer.page_size as usize];
-            file.read_exact(&mut ns_buf)?;
-            let ns_page = Page::deserialize(&ns_buf)?;
+            let ns_start = file_len - footer.page_size as usize;
+            let ns_page = Page::deserialize(&mmap[ns_start..file_len])?;
 
             // Find the default namespace (index 1)
             let mut default_pages_offset: Option<i64> = None;
@@ -155,113 +194,204 @@ impl SlabReader {
                 if ns_idx == 1 && name_len == 0 {
                     let offset_bytes: [u8; 8] = rec[2 + name_len..2 + name_len + 8]
                         .try_into()
-                        .map_err(|_| SlabError::InvalidFooter(
-                            "malformed namespace entry".to_string()
-                        ))?;
+                        .map_err(|_| {
+                            SlabError::InvalidFooter("malformed namespace entry".to_string())
+                        })?;
                     default_pages_offset = Some(i64::from_le_bytes(offset_bytes));
                     break;
                 }
             }
 
             let pp_offset = default_pages_offset.ok_or_else(|| {
-                SlabError::InvalidFooter("no default namespace found in namespaces page".to_string())
-            })?;
+                SlabError::InvalidFooter(
+                    "no default namespace found in namespaces page".to_string(),
+                )
+            })? as usize;
 
-            // Read the default namespace's pages page
-            file.seek(SeekFrom::Start(pp_offset as u64))?;
-            let mut hdr = [0u8; HEADER_SIZE];
-            file.read_exact(&mut hdr)?;
-            let pp_size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+            // Read page_size from the pages page header
+            let pp_size = u32::from_le_bytes(
+                mmap[pp_offset + 4..pp_offset + 8].try_into().unwrap(),
+            ) as usize;
+            PagesPage::deserialize(&mmap[pp_offset..pp_offset + pp_size])?
+        };
 
-            file.seek(SeekFrom::Start(pp_offset as u64))?;
-            let mut pages_buf = vec![0u8; pp_size];
-            file.read_exact(&mut pages_buf)?;
-            let pages_page = PagesPage::deserialize(&pages_buf)?;
-
-            Ok(SlabReader {
-                file,
-                pages_page,
-                page_buf: Vec::new(),
-            })
+        // Build page index with cached per-page metadata.
+        // Each data page's header and footer are validated here so that
+        // get_into() can skip per-call validation entirely.
+        let entries = pages_page.entries();
+        let mut page_index = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let offset = entry.file_offset as usize;
+            let page_size = u32::from_le_bytes(
+                mmap[offset + 4..offset + 8].try_into().unwrap(),
+            );
+            if (page_size as usize) < HEADER_SIZE + FOOTER_V1_SIZE {
+                return Err(SlabError::TruncatedPage {
+                    expected: HEADER_SIZE + FOOTER_V1_SIZE,
+                    actual: page_size as usize,
+                }
+                .with_context(Some(offset as u64), None, None));
+            }
+            let footer_start = offset + page_size as usize - FOOTER_V1_SIZE;
+            let page_type = mmap[footer_start + 12];
+            if page_type != PageType::Data as u8 {
+                return Err(SlabError::InvalidPageType(page_type)
+                    .with_context(Some(offset as u64), None, None));
+            }
+            let mut rc = [0u8; 4];
+            rc[..3].copy_from_slice(&mmap[footer_start + 5..footer_start + 8]);
+            let record_count = u32::from_le_bytes(rc);
+            page_index.push(PageIndexEntry {
+                start_ordinal: entry.start_ordinal,
+                file_offset: entry.file_offset as u64,
+                page_size,
+                record_count,
+            });
         }
+
+        Ok(SlabReader {
+            file,
+            mmap,
+            pages_page,
+            page_index,
+        })
     }
 
     /// Get a record by its ordinal value.
     ///
-    /// Uses binary search over the pages page to locate the containing
-    /// data page, then performs targeted reads of only the geometry
-    /// needed to extract the single record:
+    /// Delegates to [`get_into`](Self::get_into) with a fresh buffer.
+    /// For repeated lookups, prefer `get_ref` for zero-copy access or
+    /// `get_into` with a reusable buffer to avoid per-call allocation.
+    pub fn get(&self, ordinal: i64) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        self.get_into(ordinal, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Get a zero-copy reference to a record's bytes in the mmap.
     ///
-    /// 1. **page_size** (4 bytes at header offset 4)
-    /// 2. **footer** (16 bytes at the end of the page) → record_count
-    /// 3. **two offset entries** (8 bytes from the offset array) → record bounds
-    /// 4. **record data** (only the bytes between those offsets)
+    /// Returns a slice that borrows directly from the memory-mapped
+    /// file with no allocation or copy. This is the fastest access
+    /// path — the only work is interpolation search + two offset loads.
     ///
-    /// No full-page read. The OS buffer cache handles the underlying
-    /// block I/O.
-    pub fn get(&mut self, ordinal: i64) -> Result<Vec<u8>> {
-        let entry = self
-            .pages_page
-            .find_page_for_ordinal(ordinal)
+    /// The returned slice is valid for the lifetime of the reader.
+    pub fn get_ref(&self, ordinal: i64) -> Result<&[u8]> {
+        let idx = self
+            .find_page_interpolation(ordinal)
             .ok_or(SlabError::OrdinalNotFound(ordinal))?;
+        let entry = &self.page_index[idx];
 
         let local_index = (ordinal - entry.start_ordinal) as usize;
-        let page_start = entry.file_offset as u64;
-
-        // 1. Read page_size from header (skip magic, 4 bytes at offset+4)
-        self.file.seek(SeekFrom::Start(page_start + 4))?;
-        let mut size_buf = [0u8; 4];
-        self.file.read_exact(&mut size_buf)?;
-        let page_size = u32::from_le_bytes(size_buf) as usize;
-
-        if page_size < HEADER_SIZE + FOOTER_V1_SIZE {
-            return Err(SlabError::TruncatedPage {
-                expected: HEADER_SIZE + FOOTER_V1_SIZE,
-                actual: page_size,
-            }
-            .with_context(Some(page_start), None, Some(ordinal)));
-        }
-
-        // 2. Read footer (last 16 bytes of the page) → record_count
-        let footer_pos = page_start + (page_size - FOOTER_V1_SIZE) as u64;
-        self.file.seek(SeekFrom::Start(footer_pos))?;
-        let mut footer_buf = [0u8; FOOTER_V1_SIZE];
-        self.file.read_exact(&mut footer_buf)?;
-        let footer = Footer::read_from(&footer_buf).map_err(|e| {
-            e.with_context(Some(page_start), None, Some(ordinal))
-        })?;
-
-        let record_count = footer.record_count as usize;
-        if local_index >= record_count {
+        if local_index >= entry.record_count as usize {
             return Err(SlabError::OrdinalNotFound(ordinal).with_context(
-                Some(page_start),
+                Some(entry.file_offset),
                 None,
                 Some(ordinal),
             ));
         }
 
-        // 3. Read offsets[local_index] and offsets[local_index + 1]
+        let page_start = entry.file_offset as usize;
+        let page_size = entry.page_size as usize;
+        let record_count = entry.record_count as usize;
+
         let offset_count = record_count + 1;
-        let offsets_start =
-            page_start + (page_size - FOOTER_V1_SIZE - offset_count * 4) as u64;
-        let entry_pos = offsets_start + (local_index * 4) as u64;
-        self.file.seek(SeekFrom::Start(entry_pos))?;
-        let mut pair = [0u8; 8];
-        self.file.read_exact(&mut pair)?;
-        let rec_start = u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]) as usize;
-        let rec_end = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]) as usize;
+        let offsets_start = page_start + page_size - FOOTER_V1_SIZE - offset_count * 4;
+        let entry_pos = offsets_start + local_index * 4;
 
-        // 4. Read just the record bytes
-        self.file
-            .seek(SeekFrom::Start(page_start + rec_start as u64))?;
-        let mut record = vec![0u8; rec_end - rec_start];
-        self.file.read_exact(&mut record)?;
+        let rec_start = u32::from_le_bytes(
+            self.mmap[entry_pos..entry_pos + 4].try_into().unwrap(),
+        ) as usize;
+        let rec_end = u32::from_le_bytes(
+            self.mmap[entry_pos + 4..entry_pos + 8].try_into().unwrap(),
+        ) as usize;
 
-        Ok(record)
+        Ok(&self.mmap[page_start + rec_start..page_start + rec_end])
+    }
+
+    /// Get a record by ordinal, writing into the provided buffer.
+    ///
+    /// Uses the pre-built page index (interpolation search + cached
+    /// metadata) and the memory-mapped file for zero-syscall access:
+    ///
+    /// 1. **Interpolation search** — O(1) expected page lookup.
+    /// 2. **Offset-pair load** — 8 bytes from the mmap.
+    /// 3. **Record copy** — direct memcpy from the mmap.
+    ///
+    /// The buffer is resized to fit the record data; previous contents
+    /// are overwritten. For zero-copy access, use [`get_ref`](Self::get_ref)
+    /// instead.
+    pub fn get_into(&self, ordinal: i64, buf: &mut Vec<u8>) -> Result<()> {
+        let data = self.get_ref(ordinal)?;
+        buf.clear();
+        buf.extend_from_slice(data);
+        Ok(())
+    }
+
+    /// Interpolation search over the page index.
+    ///
+    /// For files with roughly uniform record counts per page (the common
+    /// case), this finds the containing page in 1–2 probes instead of
+    /// the ~12 iterations a binary search needs for ~3 000 pages. This
+    /// subsumes Eytzinger-layout binary search, which would reduce cache
+    /// misses but still require O(log n) probes.
+    ///
+    /// Falls back to binary search if the interpolation guess is off by
+    /// more than a bounded scan distance.
+    fn find_page_interpolation(&self, ordinal: i64) -> Option<usize> {
+        let entries = &self.page_index;
+        let len = entries.len();
+        if len == 0 || ordinal < entries[0].start_ordinal {
+            return None;
+        }
+        if len == 1 {
+            return Some(0);
+        }
+
+        let first = entries[0].start_ordinal;
+        let last = entries[len - 1].start_ordinal;
+
+        // Interpolation guess assuming uniform ordinal distribution
+        let guess = if last <= first {
+            0
+        } else {
+            let frac = (ordinal - first) as f64 / (last - first) as f64;
+            (frac * (len - 1) as f64).clamp(0.0, (len - 1) as f64) as usize
+        };
+
+        // Bounded linear scan from the guess (≤ MAX_SCAN steps).
+        // For uniform distributions the guess is within ±1 of correct.
+        const MAX_SCAN: usize = 4;
+
+        if entries[guess].start_ordinal <= ordinal {
+            // Guess is at or before target — scan right
+            let limit = (guess + MAX_SCAN + 1).min(len);
+            for i in guess..limit {
+                if i + 1 >= len || entries[i + 1].start_ordinal > ordinal {
+                    return Some(i);
+                }
+            }
+        } else {
+            // Guess overshot — scan left
+            let start = guess.saturating_sub(MAX_SCAN);
+            for i in (start..guess).rev() {
+                if entries[i].start_ordinal <= ordinal {
+                    if i + 1 >= len || entries[i + 1].start_ordinal > ordinal {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+
+        // Fallback: standard binary search (handles non-uniform distributions)
+        match entries.binary_search_by_key(&ordinal, |e| e.start_ordinal) {
+            Ok(i) => Some(i),
+            Err(0) => None,
+            Err(i) => Some(i - 1),
+        }
     }
 
     /// Check whether the file contains a record for the given ordinal.
-    pub fn contains(&mut self, ordinal: i64) -> bool {
+    pub fn contains(&self, ordinal: i64) -> bool {
         self.get(ordinal).is_ok()
     }
 
@@ -276,7 +406,7 @@ impl SlabReader {
     }
 
     /// Iterate all records in ordinal order, yielding `(ordinal, data)` pairs.
-    pub fn iter(&mut self) -> Result<Vec<(i64, Vec<u8>)>> {
+    pub fn iter(&self) -> Result<Vec<(i64, Vec<u8>)>> {
         let mut entries = self.pages_page.entries();
         // Sort by start_ordinal to ensure ordinal order
         entries.sort_by_key(|e| e.start_ordinal);
@@ -295,32 +425,24 @@ impl SlabReader {
     }
 
     /// Return the total file length in bytes.
-    pub fn file_len(&mut self) -> Result<u64> {
-        let len = self.file.seek(SeekFrom::End(0))?;
-        Ok(len)
+    pub fn file_len(&self) -> Result<u64> {
+        Ok(self.mmap.len() as u64)
     }
 
     /// Read and deserialize a page starting at the given byte offset.
     ///
-    /// This reads the 8-byte header to determine page size, then reads
-    /// and deserializes the full page. Useful for forward traversal of
+    /// Reads directly from the mmap. Useful for forward traversal of
     /// the file without relying on the pages page index.
     ///
     /// Errors are enriched with the file offset for diagnostics.
-    pub fn read_page_at_offset(&mut self, offset: u64) -> Result<Page> {
-        self.file.seek(SeekFrom::Start(offset))?;
+    pub fn read_page_at_offset(&self, offset: u64) -> Result<Page> {
+        let offset = offset as usize;
+        let page_size = u32::from_le_bytes(
+            self.mmap[offset + 4..offset + 8].try_into().unwrap(),
+        ) as usize;
 
-        let mut hdr = [0u8; HEADER_SIZE];
-        self.file.read_exact(&mut hdr)?;
-        let page_size =
-            u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
-
-        self.file.seek(SeekFrom::Start(offset))?;
-        let mut page_buf = vec![0u8; page_size];
-        self.file.read_exact(&mut page_buf)?;
-
-        Page::deserialize(&page_buf).map_err(|e| {
-            e.with_context(Some(offset), None, None)
+        Page::deserialize(&self.mmap[offset..offset + page_size]).map_err(|e| {
+            e.with_context(Some(offset as u64), None, None)
         })
     }
 
@@ -348,7 +470,7 @@ impl SlabReader {
     ///
     /// Each record's raw bytes are written directly with no framing or
     /// length prefix.
-    pub fn read_all_to_sink<W: Write>(&mut self, sink: &mut W) -> Result<u64> {
+    pub fn read_all_to_sink<W: Write>(&self, sink: &mut W) -> Result<u64> {
         let mut entries = self.pages_page.entries();
         entries.sort_by_key(|e| e.start_ordinal);
 
@@ -383,7 +505,7 @@ impl SlabReader {
     {
         let (progress, tracker) = task::new_progress();
         let handle = std::thread::spawn(move || {
-            let mut reader = SlabReader::open(&path)?;
+            let reader = SlabReader::open(&path)?;
             let mut entries = reader.pages_page.entries();
             entries.sort_by_key(|e| e.start_ordinal);
 
@@ -413,28 +535,17 @@ impl SlabReader {
         task::new_task(handle, progress)
     }
 
-    /// Read and deserialize a data page at the given file offset.
-    ///
-    /// Uses a reusable internal buffer to avoid per-page allocation
-    /// during sequential bulk operations (iter, read_all_to_sink).
+    /// Read and deserialize a data page from the mmap.
     ///
     /// Errors are enriched with the file offset from the page entry so
     /// that callers see where in the file the problem occurred.
-    pub fn read_data_page(&mut self, entry: &PageEntry) -> Result<Page> {
-        self.file
-            .seek(SeekFrom::Start(entry.file_offset as u64))?;
+    pub fn read_data_page(&self, entry: &PageEntry) -> Result<Page> {
+        let offset = entry.file_offset as usize;
+        let page_size = u32::from_le_bytes(
+            self.mmap[offset + 4..offset + 8].try_into().unwrap(),
+        ) as usize;
 
-        let mut hdr = [0u8; HEADER_SIZE];
-        self.file.read_exact(&mut hdr)?;
-        let page_size =
-            u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
-
-        self.page_buf.resize(page_size, 0);
-        self.page_buf[..HEADER_SIZE].copy_from_slice(&hdr);
-        self.file
-            .read_exact(&mut self.page_buf[HEADER_SIZE..])?;
-
-        Page::deserialize(&self.page_buf).map_err(|e| {
+        Page::deserialize(&self.mmap[offset..offset + page_size]).map_err(|e| {
             e.with_context(Some(entry.file_offset as u64), None, None)
         })
     }

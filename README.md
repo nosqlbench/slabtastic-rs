@@ -163,6 +163,10 @@ Full [Diataxis](https://diataxis.fr/) documentation lives in [`docs/`](docs/inde
   [Sparse Ordinals](docs/explanation/sparse-ordinals.md),
   [Concurrency](docs/explanation/concurrency.md)
 
+## Benchmarks
+
+See [critcmp.md](critcmp.md) for throughput numbers (NVMe).
+
 ## License
 
 Apache-2.0
