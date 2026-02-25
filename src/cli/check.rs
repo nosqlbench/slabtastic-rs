@@ -27,7 +27,7 @@ use crate::{PageType, SlabReader};
 pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut errors: Vec<String> = Vec::new();
 
-    let mut reader = SlabReader::open(file)?;
+    let reader = SlabReader::open(file)?;
     let entries = reader.page_entries();
     let file_len = reader.file_len()?;
 

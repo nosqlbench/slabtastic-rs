@@ -34,7 +34,7 @@ pub fn run(
     page_alignment: bool,
     progress: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = SlabReader::open(file)?;
+    let reader = SlabReader::open(file)?;
     let records = reader.iter()?;
     let reporter = ProgressReporter::new(progress);
 

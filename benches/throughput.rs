@@ -152,7 +152,7 @@ fn bench_sequential_read(c: &mut Criterion) {
             |b, &_count| {
                 b.iter_batched(
                     || SlabReader::open(&path).unwrap(),
-                    |mut reader| {
+                    |reader| {
                         let records = reader.iter().unwrap();
                         assert!(!records.is_empty());
                     },
@@ -192,9 +192,9 @@ fn bench_random_read(c: &mut Criterion) {
             |b, ordinals| {
                 b.iter_batched(
                     || SlabReader::open(&path).unwrap(),
-                    |mut reader| {
+                    |reader| {
                         for &ord in ordinals {
-                            let _ = reader.get(ord).unwrap();
+                            reader.get_ref(ord).unwrap();
                         }
                     },
                     BatchSize::LargeInput,
@@ -259,17 +259,17 @@ fn bench_concurrent_random_read(c: &mut Criterion) {
                     |readers| {
                         if readers.len() == 1 {
                             // Single-thread: avoid thread-spawn overhead entirely
-                            let mut reader = readers.into_iter().next().unwrap();
+                            let reader = readers.into_iter().next().unwrap();
                             for i in 0..reads_per_thread {
                                 let ordinal =
                                     (i.wrapping_mul(7919) % record_count) as i64;
-                                let _ = reader.get(ordinal).unwrap();
+                                reader.get_ref(ordinal).unwrap();
                             }
                         } else {
                             let handles: Vec<_> = readers
                                 .into_iter()
                                 .enumerate()
-                                .map(|(t, mut reader)| {
+                                .map(|(t, reader)| {
                                     thread::spawn(move || {
                                         let seed = (t as u64).wrapping_mul(6271);
                                         for i in 0..reads_per_thread {
@@ -277,7 +277,7 @@ fn bench_concurrent_random_read(c: &mut Criterion) {
                                                 ((i.wrapping_mul(7919).wrapping_add(seed))
                                                     % record_count)
                                                     as i64;
-                                            let _ = reader.get(ordinal).unwrap();
+                                            reader.get_ref(ordinal).unwrap();
                                         }
                                     })
                                 })

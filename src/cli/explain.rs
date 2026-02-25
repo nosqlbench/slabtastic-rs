@@ -45,7 +45,7 @@ pub fn explain_to<W: Write>(
     _namespace: &Option<String>,
     ordinals_filter: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = SlabReader::open(file)?;
+    let reader = SlabReader::open(file)?;
     let entries = reader.page_entries();
     let _file_len = reader.file_len()?;
 

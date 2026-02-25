@@ -161,7 +161,7 @@ pub fn run(
 
         let (count, skipped): (u64, u64) = match format {
             SourceFormat::Slab => {
-                let mut reader = SlabReader::open(source)?;
+                let reader = SlabReader::open(source)?;
                 let records = reader.iter()?;
                 let n = records.len() as u64;
                 for (_ordinal, data) in records {

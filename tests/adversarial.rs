@@ -2239,12 +2239,25 @@ fn test_reader_error_carries_offset_context() {
     data[page_type_offset] = 0; // Invalid page type
     std::fs::write(&path, &data).unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
-    let result = reader.get(0);
-    assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
-    assert!(
-        err_msg.contains("offset"),
-        "error should include file offset context: {err_msg}"
-    );
+    // The reader validates page metadata eagerly at open time, so
+    // the corrupted page_type is caught during index construction.
+    // If open somehow succeeds, get() must still fail.
+    match SlabReader::open(&path) {
+        Err(e) => {
+            let err_msg = format!("{e}");
+            assert!(
+                err_msg.contains("offset"),
+                "error should include file offset context: {err_msg}"
+            );
+        }
+        Ok(mut reader) => {
+            let result = reader.get(0);
+            assert!(result.is_err());
+            let err_msg = format!("{}", result.unwrap_err());
+            assert!(
+                err_msg.contains("offset"),
+                "error should include file offset context: {err_msg}"
+            );
+        }
+    }
 }

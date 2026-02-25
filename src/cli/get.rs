@@ -21,7 +21,7 @@ pub fn run(
     as_hex: bool,
     as_base64: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = SlabReader::open(file)?;
+    let reader = SlabReader::open(file)?;
 
     // Resolve ordinals: each argument is either a single ordinal or a range
     let mut resolved: Vec<i64> = Vec::new();

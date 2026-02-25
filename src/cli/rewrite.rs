@@ -25,7 +25,7 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = make_writer_config(preferred_page_size, min_page_size, page_alignment)?;
 
-    let mut reader = SlabReader::open(input)?;
+    let reader = SlabReader::open(input)?;
     let mut records = reader.iter()?;
 
     // Check if already monotonic before sorting
