@@ -63,18 +63,32 @@ between).
 The `slab` binary provides file maintenance commands:
 
 ```
-slab info data.slab          # file structure and statistics
-slab check data.slab         # structural integrity check
-slab get data.slab 0 42 99   # retrieve records by ordinal
-slab get data.slab 0 --raw   # raw binary output
+slab analyze data.slab              # file structure and statistics
+slab check data.slab             # structural integrity check
+slab get data.slab 0 42 99       # retrieve records by ordinal
+slab get data.slab 0 --raw       # raw binary output
+slab get data.slab [0,10)        # ordinal range specifiers
+slab get data.slab 0 --as-hex    # hex output
+slab get data.slab 0 --as-base64 # base64 output
+slab explain data.slab           # page layout block diagrams
 
 # append from stdin or a file
 echo -e "rec1\nrec2" | slab append data.slab
 slab append data.slab --source records.txt
 
-# rewrite with new page config
-slab repack input.slab output.slab --preferred-page-size 65536
-slab reorder input.slab sorted.slab
+# import from structured formats
+slab import data.slab source.json
+slab import data.slab table.csv
+
+# export to text, cstrings, or slab
+slab export data.slab --output records.txt
+slab export data.slab --output copy.slab
+
+# list namespaces
+slab namespaces data.slab
+
+# rewrite with new page config (reorders + repacks)
+slab rewrite input.slab output.slab --preferred-page-size 65536
 ```
 
 ## File layout
@@ -89,8 +103,8 @@ slab reorder input.slab sorted.slab
 +---------------+
 |  Data Page N  |
 +---------------+
-|  Pages Page   |   <- always last; page_type = Pages
-+---------------+
+|  Pages Page   |   <- last page (single namespace); page_type = Pages
++---------------+     or Namespaces Page (multi-namespace); page_type = Namespaces
 ```
 
 Each page carries a 4-byte `SLAB` magic, a 4-byte page size in both
@@ -102,8 +116,8 @@ Byte   Field            Width
 0-4    start_ordinal    5   signed LE (range +/-2^39)
 5-7    record_count     3   unsigned LE (max 16,777,215)
 8-11   page_size        4   unsigned LE
-12     page_type        1   0=Invalid, 1=Pages, 2=Data
-13     version          1   must be 1 for v1
+12     page_type        1   0=Invalid, 1=Pages, 2=Data, 3=Namespaces
+13     namespace_index  1   0=invalid, 1=default, 2-127=user
 14-15  footer_length    2   unsigned LE (>= 16)
 ```
 
@@ -132,6 +146,7 @@ Full [Diataxis](https://diataxis.fr/) documentation lives in [`docs/`](docs/inde
 - **Tutorials** -- [Getting Started](docs/tutorials/getting-started.md),
   [Streaming I/O](docs/tutorials/streaming-io.md)
 - **How-to** -- [Append Data](docs/how-to/append-data.md),
+  [Import/Export](docs/how-to/import-export.md),
   [Bulk Read/Write](docs/how-to/bulk-read-write.md),
   [Async Progress](docs/how-to/async-progress.md),
   [Page Sizing](docs/how-to/page-sizing.md),
@@ -140,6 +155,7 @@ Full [Diataxis](https://diataxis.fr/) documentation lives in [`docs/`](docs/inde
   [Page Layout](docs/reference/page-layout.md),
   [Footer](docs/reference/footer-format.md),
   [Pages Page](docs/reference/pages-page.md),
+  [Namespaces Page](docs/reference/namespaces-page.md),
   [Errors](docs/reference/errors.md),
   [CLI](docs/reference/cli.md)
 - **Explanation** -- [Why Slabtastic?](docs/explanation/why-slabtastic.md),

@@ -20,8 +20,8 @@
 //!    the forward traversal, and that all forward-traversal data pages
 //!    are accounted for in the index.
 
-use slabtastic::constants::{FOOTER_V1_SIZE, HEADER_SIZE, MIN_PAGE_SIZE};
-use slabtastic::{PageType, SlabReader};
+use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, MIN_PAGE_SIZE};
+use crate::{PageType, SlabReader};
 
 /// Run the `check` subcommand.
 pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -62,11 +62,11 @@ pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
 
-                // Version must be 1
-                if footer.version != 1 {
+                // Namespace index must be valid (1–127)
+                if footer.namespace_index == 0 || footer.namespace_index >= 128 {
                     errors.push(format!(
-                        "page {i}: unexpected version {}",
-                        footer.version
+                        "page {i}: invalid namespace index {}",
+                        footer.namespace_index
                     ));
                 }
 
@@ -192,11 +192,11 @@ pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
 
-                // Magic — validated by deserialize, but check version/footer_length
-                if footer.version != 1 {
+                // Magic — validated by deserialize, but check namespace_index/footer_length
+                if footer.namespace_index == 0 || footer.namespace_index >= 128 {
                     errors.push(format!(
-                        "forward: page at offset {offset} has version {}",
-                        footer.version
+                        "forward: page at offset {offset} has invalid namespace index {}",
+                        footer.namespace_index
                     ));
                 }
 
@@ -235,11 +235,11 @@ pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    // Last page must be Pages type
+    // Last page must be Pages or Namespaces type
     if let Some((_off, ptype, _size)) = forward_pages.last() {
-        if *ptype != PageType::Pages {
+        if *ptype != PageType::Pages && *ptype != PageType::Namespaces {
             errors.push(format!(
-                "forward: last page is {:?}, expected Pages",
+                "forward: last page is {:?}, expected Pages or Namespaces",
                 ptype
             ));
         }
@@ -249,14 +249,15 @@ pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
         errors.push("forward: no pages found in file".to_string());
     }
 
-    // Only one Pages-type page allowed (the last one)
+    // Only one terminal index page allowed (Pages or Namespaces, at the end)
     let pages_type_count = forward_pages
         .iter()
-        .filter(|(_, pt, _)| *pt == PageType::Pages)
+        .filter(|(_, pt, _)| *pt == PageType::Pages || *pt == PageType::Namespaces)
         .count();
     if pages_type_count > 1 {
         errors.push(format!(
-            "forward: found {pages_type_count} Pages-type pages (expected exactly 1 at end)"
+            "forward: found {pages_type_count} Pages/Namespaces-type pages \
+             (expected exactly 1 at end)"
         ));
     }
 

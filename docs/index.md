@@ -17,6 +17,7 @@ Step-by-step lessons for learning slabtastic.
 Task-oriented recipes for common operations.
 
 - [Append Data to an Existing File](how-to/append-data.md)
+- [Import and Export Data](how-to/import-export.md)
 - [Bulk Read and Write](how-to/bulk-read-write.md)
 - [Background Tasks with Progress Polling](how-to/async-progress.md)
 - [Page Sizing and Alignment](how-to/page-sizing.md)
@@ -30,6 +31,7 @@ Technical specifications and API details.
 - [Page Layout](reference/page-layout.md)
 - [Footer Format](reference/footer-format.md)
 - [Pages Page (Index)](reference/pages-page.md)
+- [Namespaces Page](reference/namespaces-page.md)
 - [Error Catalogue](reference/errors.md)
 - [CLI Reference](reference/cli.md)
 

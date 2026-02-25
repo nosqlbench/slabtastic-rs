@@ -89,12 +89,19 @@ use crate::task::{self, SlabTask};
 pub struct SlabReader {
     file: File,
     pages_page: PagesPage,
+    /// Reusable page buffer for bulk operations (iter, read_all_to_sink).
+    /// Avoids per-page allocation during sequential traversal.
+    page_buf: Vec<u8>,
 }
 
 impl SlabReader {
     /// Open a slabtastic file for reading.
     ///
-    /// Reads the trailing pages page to build the ordinal-to-offset index.
+    /// Reads the trailing page to build the ordinal-to-offset index. The
+    /// last page must be either a pages page (type 1) for single-namespace
+    /// files, or a namespaces page (type 3) for multi-namespace files. In
+    /// the latter case the default namespace's pages page is located via
+    /// the namespaces page.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = File::open(path)?;
 
@@ -106,47 +113,151 @@ impl SlabReader {
             });
         }
 
-        // Read the last 16 bytes for the pages page footer
+        // Read the last 16 bytes for the terminal page footer
         file.seek(SeekFrom::End(-(FOOTER_V1_SIZE as i64)))?;
         let mut footer_buf = [0u8; FOOTER_V1_SIZE];
         file.read_exact(&mut footer_buf)?;
         let footer = Footer::read_from(&footer_buf)?;
 
-        if footer.page_type != PageType::Pages {
+        if footer.page_type != PageType::Pages && footer.page_type != PageType::Namespaces {
             return Err(SlabError::InvalidPageType(footer.page_type as u8));
         }
 
-        // Read the entire pages page
-        let pages_page_offset = file_len - footer.page_size as u64;
-        file.seek(SeekFrom::Start(pages_page_offset))?;
-        let mut pages_buf = vec![0u8; footer.page_size as usize];
-        file.read_exact(&mut pages_buf)?;
-        let pages_page = PagesPage::deserialize(&pages_buf)?;
+        if footer.page_type == PageType::Pages {
+            // Single-namespace file — read the pages page directly
+            let pages_page_offset = file_len - footer.page_size as u64;
+            file.seek(SeekFrom::Start(pages_page_offset))?;
+            let mut pages_buf = vec![0u8; footer.page_size as usize];
+            file.read_exact(&mut pages_buf)?;
+            let pages_page = PagesPage::deserialize(&pages_buf)?;
+            Ok(SlabReader {
+                file,
+                pages_page,
+                page_buf: Vec::new(),
+            })
+        } else {
+            // Namespaces page — locate the default namespace's pages page
+            let ns_page_offset = file_len - footer.page_size as u64;
+            file.seek(SeekFrom::Start(ns_page_offset))?;
+            let mut ns_buf = vec![0u8; footer.page_size as usize];
+            file.read_exact(&mut ns_buf)?;
+            let ns_page = Page::deserialize(&ns_buf)?;
 
-        Ok(SlabReader { file, pages_page })
+            // Find the default namespace (index 1)
+            let mut default_pages_offset: Option<i64> = None;
+            for i in 0..ns_page.record_count() {
+                let rec = ns_page.get_record(i).unwrap();
+                if rec.len() < 10 {
+                    continue;
+                }
+                let ns_idx = rec[0];
+                let name_len = rec[1] as usize;
+                if ns_idx == 1 && name_len == 0 {
+                    let offset_bytes: [u8; 8] = rec[2 + name_len..2 + name_len + 8]
+                        .try_into()
+                        .map_err(|_| SlabError::InvalidFooter(
+                            "malformed namespace entry".to_string()
+                        ))?;
+                    default_pages_offset = Some(i64::from_le_bytes(offset_bytes));
+                    break;
+                }
+            }
+
+            let pp_offset = default_pages_offset.ok_or_else(|| {
+                SlabError::InvalidFooter("no default namespace found in namespaces page".to_string())
+            })?;
+
+            // Read the default namespace's pages page
+            file.seek(SeekFrom::Start(pp_offset as u64))?;
+            let mut hdr = [0u8; HEADER_SIZE];
+            file.read_exact(&mut hdr)?;
+            let pp_size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+
+            file.seek(SeekFrom::Start(pp_offset as u64))?;
+            let mut pages_buf = vec![0u8; pp_size];
+            file.read_exact(&mut pages_buf)?;
+            let pages_page = PagesPage::deserialize(&pages_buf)?;
+
+            Ok(SlabReader {
+                file,
+                pages_page,
+                page_buf: Vec::new(),
+            })
+        }
     }
 
     /// Get a record by its ordinal value.
     ///
     /// Uses binary search over the pages page to locate the containing
-    /// data page, then extracts the record at the local offset.
+    /// data page, then performs targeted reads of only the geometry
+    /// needed to extract the single record:
+    ///
+    /// 1. **page_size** (4 bytes at header offset 4)
+    /// 2. **footer** (16 bytes at the end of the page) → record_count
+    /// 3. **two offset entries** (8 bytes from the offset array) → record bounds
+    /// 4. **record data** (only the bytes between those offsets)
+    ///
+    /// No full-page read. The OS buffer cache handles the underlying
+    /// block I/O.
     pub fn get(&mut self, ordinal: i64) -> Result<Vec<u8>> {
         let entry = self
             .pages_page
             .find_page_for_ordinal(ordinal)
             .ok_or(SlabError::OrdinalNotFound(ordinal))?;
 
-        let page = self.read_data_page(&entry)?;
+        let local_index = (ordinal - entry.start_ordinal) as usize;
+        let page_start = entry.file_offset as u64;
 
-        let local_index = (ordinal - page.start_ordinal()) as usize;
-        if local_index >= page.record_count() {
-            return Err(SlabError::OrdinalNotFound(ordinal));
+        // 1. Read page_size from header (skip magic, 4 bytes at offset+4)
+        self.file.seek(SeekFrom::Start(page_start + 4))?;
+        let mut size_buf = [0u8; 4];
+        self.file.read_exact(&mut size_buf)?;
+        let page_size = u32::from_le_bytes(size_buf) as usize;
+
+        if page_size < HEADER_SIZE + FOOTER_V1_SIZE {
+            return Err(SlabError::TruncatedPage {
+                expected: HEADER_SIZE + FOOTER_V1_SIZE,
+                actual: page_size,
+            }
+            .with_context(Some(page_start), None, Some(ordinal)));
         }
 
-        Ok(page
-            .get_record(local_index)
-            .expect("index already validated")
-            .to_vec())
+        // 2. Read footer (last 16 bytes of the page) → record_count
+        let footer_pos = page_start + (page_size - FOOTER_V1_SIZE) as u64;
+        self.file.seek(SeekFrom::Start(footer_pos))?;
+        let mut footer_buf = [0u8; FOOTER_V1_SIZE];
+        self.file.read_exact(&mut footer_buf)?;
+        let footer = Footer::read_from(&footer_buf).map_err(|e| {
+            e.with_context(Some(page_start), None, Some(ordinal))
+        })?;
+
+        let record_count = footer.record_count as usize;
+        if local_index >= record_count {
+            return Err(SlabError::OrdinalNotFound(ordinal).with_context(
+                Some(page_start),
+                None,
+                Some(ordinal),
+            ));
+        }
+
+        // 3. Read offsets[local_index] and offsets[local_index + 1]
+        let offset_count = record_count + 1;
+        let offsets_start =
+            page_start + (page_size - FOOTER_V1_SIZE - offset_count * 4) as u64;
+        let entry_pos = offsets_start + (local_index * 4) as u64;
+        self.file.seek(SeekFrom::Start(entry_pos))?;
+        let mut pair = [0u8; 8];
+        self.file.read_exact(&mut pair)?;
+        let rec_start = u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]) as usize;
+        let rec_end = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]) as usize;
+
+        // 4. Read just the record bytes
+        self.file
+            .seek(SeekFrom::Start(page_start + rec_start as u64))?;
+        let mut record = vec![0u8; rec_end - rec_start];
+        self.file.read_exact(&mut record)?;
+
+        Ok(record)
     }
 
     /// Check whether the file contains a record for the given ordinal.
@@ -194,6 +305,8 @@ impl SlabReader {
     /// This reads the 8-byte header to determine page size, then reads
     /// and deserializes the full page. Useful for forward traversal of
     /// the file without relying on the pages page index.
+    ///
+    /// Errors are enriched with the file offset for diagnostics.
     pub fn read_page_at_offset(&mut self, offset: u64) -> Result<Page> {
         self.file.seek(SeekFrom::Start(offset))?;
 
@@ -206,7 +319,9 @@ impl SlabReader {
         let mut page_buf = vec![0u8; page_size];
         self.file.read_exact(&mut page_buf)?;
 
-        Page::deserialize(&page_buf)
+        Page::deserialize(&page_buf).map_err(|e| {
+            e.with_context(Some(offset), None, None)
+        })
     }
 
     /// Consume this reader and return a [`SlabBatchIter`] that yields
@@ -299,23 +414,29 @@ impl SlabReader {
     }
 
     /// Read and deserialize a data page at the given file offset.
+    ///
+    /// Uses a reusable internal buffer to avoid per-page allocation
+    /// during sequential bulk operations (iter, read_all_to_sink).
+    ///
+    /// Errors are enriched with the file offset from the page entry so
+    /// that callers see where in the file the problem occurred.
     pub fn read_data_page(&mut self, entry: &PageEntry) -> Result<Page> {
         self.file
             .seek(SeekFrom::Start(entry.file_offset as u64))?;
 
-        // Read the header to get page_size
         let mut hdr = [0u8; HEADER_SIZE];
         self.file.read_exact(&mut hdr)?;
         let page_size =
             u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
 
-        // Read the full page
+        self.page_buf.resize(page_size, 0);
+        self.page_buf[..HEADER_SIZE].copy_from_slice(&hdr);
         self.file
-            .seek(SeekFrom::Start(entry.file_offset as u64))?;
-        let mut page_buf = vec![0u8; page_size];
-        self.file.read_exact(&mut page_buf)?;
+            .read_exact(&mut self.page_buf[HEADER_SIZE..])?;
 
-        Page::deserialize(&page_buf)
+        Page::deserialize(&self.page_buf).map_err(|e| {
+            e.with_context(Some(entry.file_offset as u64), None, None)
+        })
     }
 }
 

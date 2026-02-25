@@ -1,8 +1,9 @@
 # Pages Page (Index)
 
-The pages page is the file-level index. It is always the **last page** in
-a valid slabtastic file and uses the standard page layout with
-`page_type = Pages`.
+The pages page is the file-level index. In a single-namespace file it is
+the **last page**; in a multi-namespace file each namespace has its own
+pages page, and the file ends with a namespaces page that locates them.
+The pages page uses the standard page layout with `page_type = Pages`.
 
 ## Entry format
 
@@ -44,9 +45,13 @@ when a new pages page is written, only the pages it references are live.
 
 ## Authoritative last page
 
-A valid slabtastic file always ends with a pages page. The **last** pages
-page in the file is authoritative. Earlier pages pages (from prior append
-cycles) are logically dead — they remain on disk but are never consulted.
+A valid slabtastic file always ends with either a pages page (single
+namespace) or a namespaces page (multiple namespaces). The **last**
+terminal page in the file is authoritative. Earlier pages pages (from
+prior append cycles) are logically dead — they remain on disk but are
+never consulted.
+
+See also: [Namespaces Page](namespaces-page.md).
 
 ## Lookup algorithm
 

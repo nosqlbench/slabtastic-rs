@@ -81,10 +81,16 @@ impl PageEntry {
 /// Entries are sorted by `start_ordinal` so that
 /// [`find_page_for_ordinal`](Self::find_page_for_ordinal) can binary
 /// search in O(log₂ n).
+///
+/// A pre-built `sorted_entries` cache is populated at construction and
+/// deserialization time so that lookups are allocation-free.
 #[derive(Debug, Clone)]
 pub struct PagesPage {
     /// The underlying page.
     pub page: Page,
+    /// Cached entries sorted by `start_ordinal`, built once at
+    /// construction / deserialization time.
+    sorted_entries: Vec<PageEntry>,
 }
 
 impl PagesPage {
@@ -92,6 +98,7 @@ impl PagesPage {
     pub fn new() -> Self {
         PagesPage {
             page: Page::new(0, PageType::Pages),
+            sorted_entries: Vec::new(),
         }
     }
 
@@ -102,33 +109,33 @@ impl PagesPage {
             file_offset,
         };
         self.page.add_record(&entry.to_bytes());
+        self.sorted_entries.push(entry);
+        self.sorted_entries.sort_by_key(|e| e.start_ordinal);
     }
 
-    /// Parse all entries from this pages page.
+    /// Return the cached entries (sorted by `start_ordinal`).
     pub fn entries(&self) -> Vec<PageEntry> {
-        self.page
-            .records
-            .iter()
-            .map(|r| PageEntry::from_bytes(r))
-            .collect()
+        self.sorted_entries.clone()
     }
 
     /// Binary search for the page entry containing the given ordinal.
     ///
     /// Returns the entry whose `start_ordinal` is the greatest value
-    /// less than or equal to `ordinal`. Entries must be sorted by
-    /// `start_ordinal`.
+    /// less than or equal to `ordinal`. Uses the pre-built sorted
+    /// entries cache — zero allocation per call.
     pub fn find_page_for_ordinal(&self, ordinal: i64) -> Option<PageEntry> {
-        let entries = self.entries();
-        if entries.is_empty() {
+        if self.sorted_entries.is_empty() {
             return None;
         }
 
         // Binary search: find the rightmost entry where start_ordinal <= ordinal
-        match entries.binary_search_by_key(&ordinal, |e| e.start_ordinal) {
-            Ok(i) => Some(entries[i]),
+        match self
+            .sorted_entries
+            .binary_search_by_key(&ordinal, |e| e.start_ordinal)
+        {
+            Ok(i) => Some(self.sorted_entries[i]),
             Err(0) => None, // ordinal is before all entries
-            Err(i) => Some(entries[i - 1]),
+            Err(i) => Some(self.sorted_entries[i - 1]),
         }
     }
 
@@ -138,12 +145,25 @@ impl PagesPage {
     }
 
     /// Deserialize a pages page from bytes.
+    ///
+    /// The sorted entries cache is populated eagerly so that subsequent
+    /// [`find_page_for_ordinal`](Self::find_page_for_ordinal) calls are
+    /// allocation-free.
     pub fn deserialize(buf: &[u8]) -> Result<PagesPage> {
         let page = Page::deserialize(buf)?;
         if page.footer.page_type != PageType::Pages {
             return Err(SlabError::InvalidPageType(page.footer.page_type as u8));
         }
-        Ok(PagesPage { page })
+        let mut sorted_entries: Vec<PageEntry> = page
+            .records
+            .iter()
+            .map(|r| PageEntry::from_bytes(r))
+            .collect();
+        sorted_entries.sort_by_key(|e| e.start_ordinal);
+        Ok(PagesPage {
+            page,
+            sorted_entries,
+        })
     }
 
     /// Return the number of page entries.

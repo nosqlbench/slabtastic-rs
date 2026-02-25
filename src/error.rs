@@ -19,8 +19,8 @@ use std::io;
 pub enum SlabError {
     /// The magic bytes do not match "SLAB".
     InvalidMagic,
-    /// The page version is not recognized.
-    InvalidVersion(u8),
+    /// The namespace index is not valid (0 = reserved, negative = reserved).
+    InvalidNamespaceIndex(u8),
     /// The page type byte is not a valid variant.
     InvalidPageType(u8),
     /// The page size in the header does not match the footer.
@@ -41,13 +41,25 @@ pub enum SlabError {
     TruncatedPage { expected: usize, actual: usize },
     /// An underlying I/O error.
     Io(io::Error),
+    /// An error with additional location context (file offset, page index,
+    /// ordinal).
+    WithContext {
+        /// The underlying error.
+        source: Box<SlabError>,
+        /// Byte offset in the file where the error occurred.
+        file_offset: Option<u64>,
+        /// Zero-based page index where the error occurred.
+        page_index: Option<usize>,
+        /// Ordinal associated with the error.
+        ordinal: Option<i64>,
+    },
 }
 
 impl fmt::Display for SlabError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SlabError::InvalidMagic => write!(f, "invalid magic bytes (expected SLAB)"),
-            SlabError::InvalidVersion(v) => write!(f, "invalid page version: {v}"),
+            SlabError::InvalidNamespaceIndex(v) => write!(f, "invalid namespace index: {v}"),
             SlabError::InvalidPageType(t) => write!(f, "invalid page type: {t}"),
             SlabError::PageSizeMismatch { header, footer } => {
                 write!(f, "page size mismatch: header={header}, footer={footer}")
@@ -70,6 +82,28 @@ impl fmt::Display for SlabError {
                 write!(f, "truncated page: expected {expected} bytes, got {actual}")
             }
             SlabError::Io(e) => write!(f, "I/O error: {e}"),
+            SlabError::WithContext {
+                source,
+                file_offset,
+                page_index,
+                ordinal,
+            } => {
+                write!(f, "{source}")?;
+                let mut parts = Vec::new();
+                if let Some(off) = file_offset {
+                    parts.push(format!("offset {off}"));
+                }
+                if let Some(pg) = page_index {
+                    parts.push(format!("page {pg}"));
+                }
+                if let Some(ord) = ordinal {
+                    parts.push(format!("ordinal {ord}"));
+                }
+                if !parts.is_empty() {
+                    write!(f, " (at {})", parts.join(", "))?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -78,7 +112,28 @@ impl std::error::Error for SlabError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             SlabError::Io(e) => Some(e),
+            SlabError::WithContext { source, .. } => Some(source.as_ref()),
             _ => None,
+        }
+    }
+}
+
+impl SlabError {
+    /// Wrap this error with file location context.
+    ///
+    /// Returns a `WithContext` variant carrying the original error plus
+    /// optional file offset, page index, and ordinal.
+    pub fn with_context(
+        self,
+        file_offset: Option<u64>,
+        page_index: Option<usize>,
+        ordinal: Option<i64>,
+    ) -> SlabError {
+        SlabError::WithContext {
+            source: Box::new(self),
+            file_offset,
+            page_index,
+            ordinal,
         }
     }
 }

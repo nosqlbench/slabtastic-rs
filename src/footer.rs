@@ -6,14 +6,20 @@
 //! Every slabtastic page ends with a fixed-size footer that carries all
 //! metadata needed to interpret the page without external context.
 //!
-//! ## Version evolution
+//! ## Namespace index (byte 13)
 //!
-//! The footer format is **page-specific**: each page carries its own
-//! version tag, so a single file may contain pages written by different
-//! format versions as long as each reader recognises the versions
-//! present. The current implementation supports only v1 (16-byte footer).
-//! Readers **must** verify the version field before interpreting a page;
-//! an unrecognised version produces [`SlabError::InvalidVersion`].
+//! Byte 13 of the v1 footer is the `namespace_index`. In pre-namespace
+//! files this byte was called `version` and was always `1`. Since
+//! namespace index 1 is the default namespace `""`, existing files are
+//! backward compatible. Index 0 is invalid/reserved, indices 2–127 are
+//! user-defined, and negative indices (−128 to −1) are reserved.
+//!
+//! ## Format versioning
+//!
+//! Page types implicitly carry their format version. Types 1 (pages
+//! page), 2 (data page), and 3 (namespaces page) are all v1-era types.
+//! Future revisions will introduce new page type values rather than
+//! incrementing a version field.
 //!
 //! ## v1 capacity limits
 //!
@@ -21,7 +27,7 @@
 //! ±2^39 ≈ ±549 billion) and the record count in 3 bytes (max 2^24 − 1
 //! = 16,777,215 records per page).
 
-use crate::constants::{FOOTER_V1_SIZE, PageType, VERSION_1};
+use crate::constants::{DEFAULT_NAMESPACE_INDEX, FOOTER_V1_SIZE, PageType};
 use crate::error::{Result, SlabError};
 
 /// A 16-byte page footer (v1 layout, little-endian).
@@ -29,13 +35,13 @@ use crate::error::{Result, SlabError};
 /// ## Wire format
 ///
 /// ```text
-/// Byte   Field            Width   Encoding
-/// 0–4    start_ordinal    5       signed LE (±2^39 range)
-/// 5–7    record_count     3       unsigned LE (max 2^24 − 1 = 16,777,215)
-/// 8–11   page_size        4       unsigned LE (512 .. 2^32)
-/// 12     page_type        1       enum (0=Invalid, 1=Pages, 2=Data)
-/// 13     version          1       must be 1 for v1
-/// 14–15  footer_length    2       unsigned LE (≥ 16, multiple of 16)
+/// Byte   Field              Width   Encoding
+/// 0–4    start_ordinal      5       signed LE (±2^39 range)
+/// 5–7    record_count       3       unsigned LE (max 2^24 − 1 = 16,777,215)
+/// 8–11   page_size          4       unsigned LE (512 .. 2^32)
+/// 12     page_type          1       enum (0=Invalid, 1=Pages, 2=Data, 3=Namespaces)
+/// 13     namespace_index    1       signed (0=invalid, 1=default "", 2–127=user)
+/// 14–15  footer_length      2       unsigned LE (≥ 16, multiple of 16)
 /// ```
 ///
 /// ## Examples
@@ -61,21 +67,22 @@ pub struct Footer {
     pub page_size: u32,
     /// Discriminator for the page type.
     pub page_type: PageType,
-    /// Format version (must be 1 for v1).
-    pub version: u8,
+    /// Namespace index (0=invalid, 1=default `""`, 2–127=user-defined).
+    pub namespace_index: u8,
     /// Length of the footer in bytes (>= 16, multiple of 16).
     pub footer_length: u16,
 }
 
 impl Footer {
-    /// Create a new v1 footer with the given parameters.
+    /// Create a new v1 footer with the given parameters and the default
+    /// namespace index (`1`).
     pub fn new(start_ordinal: i64, record_count: u32, page_size: u32, page_type: PageType) -> Self {
         Footer {
             start_ordinal,
             record_count,
             page_size,
             page_type,
-            version: VERSION_1,
+            namespace_index: DEFAULT_NAMESPACE_INDEX,
             footer_length: FOOTER_V1_SIZE as u16,
         }
     }
@@ -102,8 +109,8 @@ impl Footer {
         // page_type: 1 byte
         buf[12] = self.page_type as u8;
 
-        // version: 1 byte
-        buf[13] = self.version;
+        // namespace_index: 1 byte
+        buf[13] = self.namespace_index;
 
         // footer_length: 2 bytes LE
         buf[14..16].copy_from_slice(&self.footer_length.to_le_bytes());
@@ -145,10 +152,10 @@ impl Footer {
             return Err(SlabError::InvalidPageType(page_type_raw));
         }
 
-        // version: 1 byte
-        let version = buf[13];
-        if version != VERSION_1 {
-            return Err(SlabError::InvalidVersion(version));
+        // namespace_index: 1 byte (0 = invalid, 1 = default, 2–127 = user, 128–255 = reserved)
+        let namespace_index = buf[13];
+        if namespace_index == 0 || namespace_index >= 128 {
+            return Err(SlabError::InvalidNamespaceIndex(namespace_index));
         }
 
         // footer_length: 2 bytes LE
@@ -164,7 +171,7 @@ impl Footer {
             record_count,
             page_size,
             page_type,
-            version,
+            namespace_index,
             footer_length,
         })
     }
@@ -221,22 +228,58 @@ mod tests {
         assert_eq!(decoded.record_count, 0x00FF_FFFF);
     }
 
-    /// A footer with version 99 (not the recognized v1) must be rejected
-    /// during deserialization with an `InvalidVersion` error.
+    /// A footer with namespace_index 0 (invalid/reserved) must be rejected
+    /// during deserialization with an `InvalidNamespaceIndex` error.
     #[test]
-    fn test_footer_invalid_version() {
+    fn test_footer_invalid_namespace_index_zero() {
         let footer = Footer {
             start_ordinal: 0,
             record_count: 0,
             page_size: 512,
             page_type: PageType::Data,
-            version: 99,
+            namespace_index: 0,
             footer_length: 16,
         };
         let mut buf = [0u8; FOOTER_V1_SIZE];
         footer.write_to(&mut buf);
         let result = Footer::read_from(&buf);
         assert!(result.is_err());
+    }
+
+    /// A footer with namespace_index 200 (in the reserved negative range
+    /// when interpreted as signed) must be rejected.
+    #[test]
+    fn test_footer_invalid_namespace_index_reserved() {
+        let footer = Footer {
+            start_ordinal: 0,
+            record_count: 0,
+            page_size: 512,
+            page_type: PageType::Data,
+            namespace_index: 200,
+            footer_length: 16,
+        };
+        let mut buf = [0u8; FOOTER_V1_SIZE];
+        footer.write_to(&mut buf);
+        let result = Footer::read_from(&buf);
+        assert!(result.is_err());
+    }
+
+    /// A footer with a valid user-defined namespace_index (e.g. 42) must
+    /// round-trip successfully.
+    #[test]
+    fn test_footer_user_namespace_index() {
+        let footer = Footer {
+            start_ordinal: 0,
+            record_count: 1,
+            page_size: 512,
+            page_type: PageType::Data,
+            namespace_index: 42,
+            footer_length: 16,
+        };
+        let mut buf = [0u8; FOOTER_V1_SIZE];
+        footer.write_to(&mut buf);
+        let decoded = Footer::read_from(&buf).unwrap();
+        assert_eq!(decoded.namespace_index, 42);
     }
 
     /// Corrupting the page_type byte to 0 (Invalid) after serializing a

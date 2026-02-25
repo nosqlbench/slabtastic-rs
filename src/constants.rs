@@ -38,8 +38,13 @@ pub const MAX_PAGE_SIZE: u32 = u32::MAX;
 /// Size of the v1 page footer in bytes.
 pub const FOOTER_V1_SIZE: usize = 16;
 
-/// Version number for the v1 format.
-pub const VERSION_1: u8 = 1;
+/// Default namespace index (byte 13 of the v1 footer).
+///
+/// In the v1 format this byte was called `version` and was always `1`.
+/// With namespace support the same byte identifies the namespace a page
+/// belongs to. Index `1` is the default namespace `""`, so existing v1
+/// files are backward compatible without migration.
+pub const DEFAULT_NAMESPACE_INDEX: u8 = 1;
 
 /// Conventional file extension for slabtastic files.
 ///
@@ -50,7 +55,9 @@ pub const SLAB_EXTENSION: &str = ".slab";
 /// Page type discriminator (1-byte enum in the footer).
 ///
 /// The page type distinguishes data pages (which hold user records) from
-/// the pages page (the index). A value of 0 is reserved as invalid.
+/// the pages page (the index) and the namespaces page. A value of 0 is
+/// reserved as invalid. Page types implicitly carry their format version:
+/// types 1, 2, and 3 are all v1-era types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PageType {
@@ -58,12 +65,16 @@ pub enum PageType {
     /// page with this type is always rejected during deserialization.
     Invalid = 0,
     /// Pages page — the file-level index (value 1). The last page in a
-    /// valid slabtastic file is always of this type. Its records are
+    /// single-namespace slabtastic file is of this type. Its records are
     /// `(start_ordinal:8, file_offset:8)` tuples sorted by ordinal.
     Pages = 1,
     /// Data page — holds user records (value 2). Records are packed
     /// contiguously and indexed by the trailing offset array.
     Data = 2,
+    /// Namespaces page (value 3). Maps namespace names to indices and
+    /// locates each namespace's pages page. When present, this is always
+    /// the last page in the file.
+    Namespaces = 3,
 }
 
 impl PageType {
@@ -73,6 +84,7 @@ impl PageType {
             0 => Some(PageType::Invalid),
             1 => Some(PageType::Pages),
             2 => Some(PageType::Data),
+            3 => Some(PageType::Namespaces),
             _ => None,
         }
     }
@@ -88,16 +100,16 @@ mod tests {
         assert_eq!(&MAGIC, b"SLAB");
     }
 
-    /// Convert each valid PageType variant (0, 1, 2) to u8 and back,
-    /// confirming round-trip identity. Values outside the enum (3, 255)
+    /// Convert each valid PageType variant (0, 1, 2, 3) to u8 and back,
+    /// confirming round-trip identity. Values outside the enum (4, 255)
     /// must return `None`.
     #[test]
     fn test_page_type_roundtrip() {
-        for val in 0..=2u8 {
+        for val in 0..=3u8 {
             let pt = PageType::from_u8(val).unwrap();
             assert_eq!(pt as u8, val);
         }
-        assert!(PageType::from_u8(3).is_none());
+        assert!(PageType::from_u8(4).is_none());
         assert!(PageType::from_u8(255).is_none());
     }
 }

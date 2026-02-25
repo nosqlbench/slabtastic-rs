@@ -1,9 +1,8 @@
 // Copyright 2026 nosqlbench contributors
 // SPDX-License-Identifier: Apache-2.0
 
-mod cli;
-
 use clap::Parser;
+use slabtastic::cli;
 
 fn main() {
     let cli = cli::Cli::parse();

@@ -209,6 +209,59 @@ impl Page {
     pub fn start_ordinal(&self) -> i64 {
         self.footer.start_ordinal
     }
+
+    /// Extract a single record from a serialized page buffer without
+    /// deserializing the entire page.
+    ///
+    /// This reads only the footer and the two offset entries needed to
+    /// locate the record at `local_index`, then copies just that
+    /// record's bytes. No `Vec<Vec<u8>>` allocation for all records and
+    /// no parsing of all N+1 offsets.
+    ///
+    /// Magic validation is intentionally skipped since callers are
+    /// expected to have obtained the buffer through a validated path.
+    ///
+    /// Note: [`SlabReader::get`](crate::SlabReader::get) performs
+    /// targeted I/O directly (reading only geometry + record bytes)
+    /// rather than buffering the full page. This method is useful when
+    /// a full page buffer is already in memory for other reasons.
+    ///
+    /// ## Errors
+    ///
+    /// - [`SlabError::TruncatedPage`] if the buffer is too small.
+    /// - [`SlabError::OrdinalNotFound`] if `local_index` is out of range
+    ///   (uses ordinal −1 as a placeholder since the caller maps ordinals
+    ///   to local indices).
+    pub fn get_record_from_buf(buf: &[u8], local_index: usize) -> Result<Vec<u8>> {
+        if buf.len() < HEADER_SIZE + FOOTER_V1_SIZE {
+            return Err(SlabError::TruncatedPage {
+                expected: HEADER_SIZE + FOOTER_V1_SIZE,
+                actual: buf.len(),
+            });
+        }
+
+        // Read footer from last 16 bytes
+        let footer_start = buf.len() - FOOTER_V1_SIZE;
+        let footer = Footer::read_from(&buf[footer_start..])?;
+
+        let record_count = footer.record_count as usize;
+        if local_index >= record_count {
+            return Err(SlabError::OrdinalNotFound(-1));
+        }
+
+        // Offset array sits immediately before the footer.
+        // We only need offsets[local_index] and offsets[local_index + 1].
+        let offset_count = record_count + 1;
+        let offsets_size = offset_count * 4;
+        let offsets_start = footer_start - offsets_size;
+
+        let pos_a = offsets_start + local_index * 4;
+        let pos_b = pos_a + 4;
+        let start = u32::from_le_bytes([buf[pos_a], buf[pos_a + 1], buf[pos_a + 2], buf[pos_a + 3]]) as usize;
+        let end = u32::from_le_bytes([buf[pos_b], buf[pos_b + 1], buf[pos_b + 2], buf[pos_b + 3]]) as usize;
+
+        Ok(buf[start..end].to_vec())
+    }
 }
 
 #[cfg(test)]
@@ -278,5 +331,52 @@ mod tests {
         assert_eq!(page.serialized_size(), 37);
         let bytes = page.serialize();
         assert_eq!(bytes.len(), 37);
+    }
+
+    /// `get_record_from_buf` extracts a single record from a serialized
+    /// page without deserializing all records.
+    #[test]
+    fn test_get_record_from_buf_single() {
+        let mut page = Page::new(0, PageType::Data);
+        page.add_record(b"only-record");
+        let bytes = page.serialize();
+        let record = Page::get_record_from_buf(&bytes, 0).unwrap();
+        assert_eq!(record, b"only-record");
+    }
+
+    /// `get_record_from_buf` correctly indexes into a multi-record page.
+    #[test]
+    fn test_get_record_from_buf_multiple() {
+        let mut page = Page::new(0, PageType::Data);
+        page.add_record(b"alpha");
+        page.add_record(b"beta");
+        page.add_record(b"gamma");
+        let bytes = page.serialize();
+
+        assert_eq!(Page::get_record_from_buf(&bytes, 0).unwrap(), b"alpha");
+        assert_eq!(Page::get_record_from_buf(&bytes, 1).unwrap(), b"beta");
+        assert_eq!(Page::get_record_from_buf(&bytes, 2).unwrap(), b"gamma");
+    }
+
+    /// `get_record_from_buf` with an out-of-bounds index returns an error.
+    #[test]
+    fn test_get_record_from_buf_out_of_bounds() {
+        let mut page = Page::new(0, PageType::Data);
+        page.add_record(b"one");
+        let bytes = page.serialize();
+        assert!(Page::get_record_from_buf(&bytes, 1).is_err());
+        assert!(Page::get_record_from_buf(&bytes, 100).is_err());
+    }
+
+    /// `get_record_from_buf` still works when magic bytes are corrupted
+    /// since it intentionally skips magic validation for performance.
+    #[test]
+    fn test_get_record_from_buf_skips_magic_validation() {
+        let mut page = Page::new(0, PageType::Data);
+        page.add_record(b"test");
+        let mut bytes = page.serialize();
+        bytes[0] = b'X';
+        // Should still extract the record — magic is not checked
+        assert_eq!(Page::get_record_from_buf(&bytes, 0).unwrap(), b"test");
     }
 }

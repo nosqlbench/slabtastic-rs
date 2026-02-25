@@ -5,8 +5,8 @@ All fallible library functions return `Result<T, SlabError>`.
 | Variant | Meaning | Common cause |
 |---------|---------|--------------|
 | `InvalidMagic` | First 4 bytes are not `SLAB` | Corrupt file, wrong file type |
-| `InvalidVersion(u8)` | Footer version is not recognised | Future format version, corruption |
-| `InvalidPageType(u8)` | Page type byte is not 0, 1, or 2 | Corruption, invalid file |
+| `InvalidNamespaceIndex(u8)` | Namespace index is invalid (0 or >= 128) | Corruption, reserved index |
+| `InvalidPageType(u8)` | Page type byte is not 0, 1, 2, or 3 | Corruption, invalid file |
 | `PageSizeMismatch { header, footer }` | Header and footer page_size differ | Truncation, in-place corruption |
 | `PageTooSmall(u32)` | Configured page size < 512 | Invalid `WriterConfig` |
 | `PageTooLarge(u64)` | Configured page size > 2^32 | Invalid `WriterConfig` |

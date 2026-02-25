@@ -1,6 +1,7 @@
 # Page Layout
 
-Every page — data page or pages page — uses the same wire layout:
+Every page — data page, pages page, or namespaces page — uses the same
+wire layout:
 
 ```text
 [header][records][offsets][footer]

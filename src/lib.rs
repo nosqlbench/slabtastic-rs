@@ -22,7 +22,7 @@
 //! ```
 //!
 //! The footer encodes the starting ordinal, record count, page size, page
-//! type, format version, and footer length — all in 16 little-endian bytes.
+//! type, namespace index, and footer length — all in 16 little-endian bytes.
 //! The header and footer both carry the page size, enabling both forward
 //! and backward traversal of the file without the index.
 //!
@@ -96,10 +96,12 @@
 //! # }
 //! ```
 
+pub mod cli;
 pub mod config;
 pub mod constants;
 pub mod error;
 pub mod footer;
+pub mod namespaces_page;
 pub mod page;
 pub mod pages_page;
 pub mod reader;
@@ -110,6 +112,7 @@ pub use config::WriterConfig;
 pub use constants::{PageType, SLAB_EXTENSION};
 pub use error::{Result, SlabError};
 pub use footer::Footer;
+pub use namespaces_page::{NamespaceEntry, NamespacesPage};
 pub use page::Page;
 pub use pages_page::{PageEntry, PagesPage};
 pub use reader::{SlabBatchIter, SlabReader};

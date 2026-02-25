@@ -123,6 +123,8 @@ fn test_ordinal_not_found() {
 
     match reader.get(99) {
         Err(SlabError::OrdinalNotFound(99)) => {}
+        Err(SlabError::WithContext { ref source, .. })
+            if matches!(**source, SlabError::OrdinalNotFound(99)) => {}
         other => panic!("expected OrdinalNotFound(99), got {other:?}"),
     }
 }

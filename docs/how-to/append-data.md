@@ -53,9 +53,16 @@ Optional flags:
 
 ## Notes
 
+- The CLI `append` command verifies file integrity before appending
+  (equivalent to running `slab check` first). If the file is malformed,
+  the append is rejected.
 - The original data pages are never modified. This is a strictly
   append-only operation.
 - The old pages page becomes logically dead once the new one is written.
 - If the append is interrupted before `finish()` writes the new pages
   page, the file remains valid with only its original data (the old pages
   page is still intact at the former end of file).
+- Appending works with both single-namespace files (ending with a pages
+  page) and multi-namespace files (ending with a namespaces page). In the
+  latter case, the writer locates the default namespace's pages page via
+  the namespaces page.

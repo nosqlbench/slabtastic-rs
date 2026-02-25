@@ -2,8 +2,9 @@
 
 ## How appending works
 
-A slabtastic file always ends with a pages page (the index). Appending
-new data follows this sequence:
+A slabtastic file always ends with a pages page (the index) or a
+namespaces page (for multi-namespace files). Appending new data follows
+this sequence:
 
 1. Read the existing pages page to discover existing data pages.
 2. Position the write cursor after the last data page (just before the
@@ -28,8 +29,9 @@ This enables several patterns:
 - **Replace a page** — write a new data page with the same ordinal range,
   then write a pages page that references the new page instead of the old
   one.
-- **Compact / repack** — `slab repack` reads all live records and writes
-  them to a new file, eliminating dead pages and wasted alignment padding.
+- **Compact / rewrite** — `slab rewrite` reads all live records, sorts
+  them by ordinal, and writes them to a new file, eliminating dead pages
+  and wasted alignment padding.
 
 ## Ordinal continuity
 
@@ -54,5 +56,5 @@ partially-written page), but it means:
 
 After multiple append cycles, the file may contain several logically-dead
 pages pages interspersed between data pages. Only the **last** pages page
-is authoritative. Use `slab repack` to eliminate the dead pages if file
+is authoritative. Use `slab rewrite` to eliminate the dead pages if file
 size is a concern.

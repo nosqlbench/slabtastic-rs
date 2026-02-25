@@ -127,16 +127,55 @@ impl SlabWriter {
         file.read_exact(&mut footer_buf)?;
         let footer = Footer::read_from(&footer_buf)?;
 
-        if footer.page_type != PageType::Pages {
+        if footer.page_type != PageType::Pages && footer.page_type != PageType::Namespaces {
             return Err(SlabError::InvalidPageType(footer.page_type as u8));
         }
 
-        // Read the entire pages page
-        let pages_page_offset = file_len - footer.page_size as u64;
-        file.seek(SeekFrom::Start(pages_page_offset))?;
-        let mut pages_buf = vec![0u8; footer.page_size as usize];
-        file.read_exact(&mut pages_buf)?;
-        let old_pages_page = PagesPage::deserialize(&pages_buf)?;
+        // If the last page is a namespaces page, locate the default
+        // namespace's pages page. Otherwise read the pages page directly.
+        let old_pages_page = if footer.page_type == PageType::Namespaces {
+            let ns_page_offset = file_len - footer.page_size as u64;
+            file.seek(SeekFrom::Start(ns_page_offset))?;
+            let mut ns_buf = vec![0u8; footer.page_size as usize];
+            file.read_exact(&mut ns_buf)?;
+            let ns_page = Page::deserialize(&ns_buf)?;
+
+            let mut default_pp_offset: Option<i64> = None;
+            for i in 0..ns_page.record_count() {
+                let rec = ns_page.get_record(i).unwrap();
+                if rec.len() < 10 {
+                    continue;
+                }
+                let ns_idx = rec[0];
+                let name_len = rec[1] as usize;
+                if ns_idx == 1 && name_len == 0 {
+                    let offset_bytes: [u8; 8] = rec[2 + name_len..2 + name_len + 8]
+                        .try_into()
+                        .map_err(|_| SlabError::InvalidFooter(
+                            "malformed namespace entry".to_string()
+                        ))?;
+                    default_pp_offset = Some(i64::from_le_bytes(offset_bytes));
+                    break;
+                }
+            }
+            let pp_offset = default_pp_offset.ok_or_else(|| {
+                SlabError::InvalidFooter("no default namespace in namespaces page".to_string())
+            })?;
+            file.seek(SeekFrom::Start(pp_offset as u64))?;
+            let mut hdr = [0u8; HEADER_SIZE];
+            file.read_exact(&mut hdr)?;
+            let pp_size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
+            file.seek(SeekFrom::Start(pp_offset as u64))?;
+            let mut pages_buf = vec![0u8; pp_size];
+            file.read_exact(&mut pages_buf)?;
+            PagesPage::deserialize(&pages_buf)?
+        } else {
+            let pages_page_offset = file_len - footer.page_size as u64;
+            file.seek(SeekFrom::Start(pages_page_offset))?;
+            let mut pages_buf = vec![0u8; footer.page_size as usize];
+            file.read_exact(&mut pages_buf)?;
+            PagesPage::deserialize(&pages_buf)?
+        };
 
         // Determine the next ordinal from existing entries
         let entries = old_pages_page.entries();
