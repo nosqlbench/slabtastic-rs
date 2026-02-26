@@ -24,10 +24,10 @@ use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, MIN_PAGE_SIZE};
 use crate::{PageType, SlabReader};
 
 /// Run the `check` subcommand.
-pub fn run(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(file: &str, namespace: &Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut errors: Vec<String> = Vec::new();
 
-    let reader = SlabReader::open(file)?;
+    let reader = SlabReader::open_namespace(file, namespace.as_deref())?;
     let entries = reader.page_entries();
     let file_len = reader.file_len()?;
 

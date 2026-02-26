@@ -605,6 +605,82 @@ fn bench_bulk_write(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure multi-batch concurrent read throughput via `multi_batch_get`.
+///
+/// Pre-builds a 1 M-record file, then submits 2/4/8/16 concurrent
+/// batches of 10 000 ordinals each. Throughput is reported as total
+/// ordinals across all batches per second. Within each iteration, the
+/// benchmark asserts that result indices match batch indices (order
+/// sensitivity test).
+fn bench_multi_batch_read(c: &mut Criterion) {
+    let mut group = c.benchmark_group("multi_batch_read");
+    group.sample_size(10);
+
+    let record_count = 1_000_000u64;
+    let (_tmp, path) = prepare_file(record_count);
+    let ordinals_per_batch = 10_000u64;
+
+    for n_batches in [2, 4, 8, 16] {
+        let total_ordinals = ordinals_per_batch * n_batches as u64;
+        group.throughput(Throughput::Elements(total_ordinals));
+
+        // Pre-build batches with distinct ordinal patterns per batch
+        let batches: Vec<Vec<i64>> = (0..n_batches)
+            .map(|b| {
+                let seed = (b as u64).wrapping_mul(6271);
+                (0..ordinals_per_batch)
+                    .map(|i| {
+                        ((i.wrapping_mul(7919).wrapping_add(seed)) % record_count) as i64
+                    })
+                    .collect()
+            })
+            .collect();
+
+        group.bench_with_input(
+            BenchmarkId::new(
+                &format!(
+                    "{}b_x_{}_in_{}",
+                    n_batches,
+                    human(ordinals_per_batch),
+                    human(record_count),
+                ),
+                human(total_ordinals),
+            ),
+            &n_batches,
+            |b, &_n_batches| {
+                b.iter_batched(
+                    || SlabReader::open(&path).unwrap(),
+                    |reader| {
+                        let batch_refs: Vec<&[i64]> =
+                            batches.iter().map(|v| v.as_slice()).collect();
+                        let results = reader.multi_batch_get(&batch_refs);
+
+                        // Order sensitivity: result count matches batch count
+                        // and each result has the expected number of ordinals
+                        assert_eq!(results.len(), batches.len());
+                        for (i, result) in results.iter().enumerate() {
+                            assert_eq!(
+                                result.records.len(),
+                                batches[i].len(),
+                                "result {i} record count mismatch"
+                            );
+                            // Verify ordinals match submission order
+                            for (j, (ord, _)) in result.records.iter().enumerate() {
+                                assert_eq!(
+                                    *ord, batches[i][j],
+                                    "result {i} ordinal {j} mismatch"
+                                );
+                            }
+                        }
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_write,
@@ -618,5 +694,6 @@ criterion_group!(
     bench_read_to_sink_async,
     bench_write_from_iter_async,
     bench_bulk_write,
+    bench_multi_batch_read,
 );
 criterion_main!(benches);

@@ -26,14 +26,15 @@ pub fn run(
     min_page_size: Option<u32>,
     page_alignment: bool,
     progress: bool,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Verify the existing file is well-formed before appending
     println!("Verifying {file} before appending...");
-    super::check::run(file)?;
+    super::check::run(file, namespace)?;
     println!();
 
     let config = make_writer_config(preferred_page_size, min_page_size, page_alignment)?;
-    let mut writer = SlabWriter::append(file, config)?;
+    let mut writer = SlabWriter::append_namespace(file, config, namespace.as_deref())?;
 
     let reporter = ProgressReporter::new(progress);
     let mut count: u64 = 0;

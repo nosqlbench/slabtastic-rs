@@ -44,11 +44,17 @@ pub enum Command {
         /// Percentage of records/pages to sample (0.0–100.0).
         #[arg(long)]
         sample_percent: Option<f64>,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Check a slabtastic file for structural errors.
     Check {
         /// Path to the slabtastic file.
         file: String,
+        /// Namespace to check (checks default namespace if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Retrieve records by ordinal.
     Get {
@@ -65,6 +71,9 @@ pub enum Command {
         /// Output bytes as base64.
         #[arg(long)]
         as_base64: bool,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Rewrite a slabtastic file: reorder by ordinal and repack to new page settings.
     Rewrite {
@@ -84,6 +93,9 @@ pub enum Command {
         /// Show progress on stderr.
         #[arg(long)]
         progress: bool,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Append records from stdin or a source file to an existing slab file.
     Append {
@@ -105,6 +117,9 @@ pub enum Command {
         /// Show progress on stderr.
         #[arg(long)]
         progress: bool,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Import data from an external file format into a slab file.
     Import {
@@ -154,6 +169,9 @@ pub enum Command {
         /// Show progress on stderr.
         #[arg(long)]
         progress: bool,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Export content from a slab file to an external format.
     Export {
@@ -190,6 +208,9 @@ pub enum Command {
         /// Show progress on stderr.
         #[arg(long)]
         progress: bool,
+        /// Namespace to operate on (uses default if omitted).
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// List all namespaces in a slab file.
     Namespaces {
@@ -336,15 +357,17 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             file,
             samples,
             sample_percent,
-        } => analyze::run(&file, samples, sample_percent)?,
-        Command::Check { file } => check::run(&file)?,
+            namespace,
+        } => analyze::run(&file, samples, sample_percent, &namespace)?,
+        Command::Check { file, namespace } => check::run(&file, &namespace)?,
         Command::Get {
             file,
             ordinals,
             raw,
             as_hex,
             as_base64,
-        } => get::run(&file, &ordinals, raw, as_hex, as_base64)?,
+            namespace,
+        } => get::run(&file, &ordinals, raw, as_hex, as_base64, &namespace)?,
         Command::Append {
             file,
             source,
@@ -352,6 +375,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            namespace,
         } => append::run(
             &file,
             source.as_deref(),
@@ -359,6 +383,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            &namespace,
         )?,
         Command::Import {
             file,
@@ -377,6 +402,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            namespace,
         } => import::run(
             &file,
             &source,
@@ -394,6 +420,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            &namespace,
         )?,
         Command::Export {
             file,
@@ -407,6 +434,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            namespace,
         } => export::run(
             &file,
             output.as_deref(),
@@ -418,6 +446,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            &namespace,
         )?,
         Command::Rewrite {
             input,
@@ -426,6 +455,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            namespace,
         } => rewrite::run(
             &input,
             &output,
@@ -433,6 +463,7 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             min_page_size,
             page_alignment,
             progress,
+            &namespace,
         )?,
         Command::Namespaces { file } => namespaces::run(&file)?,
         Command::Explain {

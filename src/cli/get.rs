@@ -20,8 +20,9 @@ pub fn run(
     raw: bool,
     as_hex: bool,
     as_base64: bool,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reader = SlabReader::open(file)?;
+    let reader = SlabReader::open_namespace(file, namespace.as_deref())?;
 
     // Resolve ordinals: each argument is either a single ordinal or a range
     let mut resolved: Vec<i64> = Vec::new();

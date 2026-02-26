@@ -15,8 +15,9 @@ pub fn run(
     file: &str,
     samples: Option<usize>,
     sample_percent: Option<f64>,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reader = SlabReader::open(file)?;
+    let reader = SlabReader::open_namespace(file, namespace.as_deref())?;
     let entries = reader.page_entries();
     let file_len = reader.file_len()?;
 

@@ -33,7 +33,7 @@
 //!
 //! ## Reading
 //!
-//! [`SlabReader`] supports three access modes:
+//! [`SlabReader`] supports four access modes:
 //!
 //! - **Point get** — fetch a single record by ordinal.
 //! - **Batched iteration** — [`SlabReader::batch_iter`] yields records in
@@ -42,6 +42,11 @@
 //!   to any [`std::io::Write`] sink. For background execution with
 //!   progress polling, use [`SlabReader::read_to_sink_async`] which
 //!   returns a [`SlabTask`].
+//! - **Multi-batch concurrent read** —
+//!   [`SlabReader::multi_batch_get`] submits multiple independent batch
+//!   read requests for concurrent execution using scoped threads.
+//!   Results are returned in submission order as [`BatchReadResult`]
+//!   values with partial success for missing ordinals.
 //!
 //! ## Writing
 //!
@@ -115,6 +120,6 @@ pub use footer::Footer;
 pub use namespaces_page::{NamespaceEntry, NamespacesPage};
 pub use page::Page;
 pub use pages_page::{PageEntry, PagesPage};
-pub use reader::{SlabBatchIter, SlabReader};
+pub use reader::{BatchReadResult, SlabBatchIter, SlabReader};
 pub use task::{SlabProgress, SlabTask};
 pub use writer::SlabWriter;

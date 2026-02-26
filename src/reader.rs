@@ -4,7 +4,7 @@
 //! Slabtastic file reader.
 //!
 //! Opening a file reads the trailing pages page to build an in-memory
-//! ordinal-to-offset index. Records can then be accessed in three modes:
+//! ordinal-to-offset index. Records can then be accessed in four modes:
 //!
 //! - **Point get** — [`SlabReader::get`] fetches a single record by ordinal.
 //! - **Batched iteration** — [`SlabReader::batch_iter`] returns a
@@ -14,6 +14,11 @@
 //!   data sequentially to any [`std::io::Write`] sink. For background
 //!   execution with progress polling, use the associated function
 //!   [`SlabReader::read_to_sink_async`].
+//! - **Multi-batch concurrent read** —
+//!   [`SlabReader::multi_batch_get`] submits multiple independent batch
+//!   read requests for concurrent execution using scoped threads.
+//!   Results are returned in submission order as [`BatchReadResult`]
+//!   values, with `None` for missing ordinals (partial success).
 //!
 //! ## Performance
 //!
@@ -55,12 +60,41 @@ use memmap2::Mmap;
 #[cfg(unix)]
 use memmap2::Advice;
 
-use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, PageType};
+use crate::constants::{DEFAULT_NAMESPACE_INDEX, FOOTER_V1_SIZE, HEADER_SIZE, PageType};
 use crate::error::{Result, SlabError};
 use crate::footer::Footer;
+use crate::namespaces_page::{NamespaceEntry, NamespacesPage};
 use crate::page::Page;
 use crate::pages_page::{PageEntry, PagesPage};
 use crate::task::{self, SlabTask};
+
+/// The result of one batch within a multi-batch read.
+///
+/// Each requested ordinal has a corresponding entry in `records`,
+/// in the same order as the input. Found records contain `Some(data)`;
+/// missing ordinals contain `None`.
+pub struct BatchReadResult {
+    /// Ordinal–data pairs in submission order. `None` means the ordinal
+    /// was not found.
+    pub records: Vec<(i64, Option<Vec<u8>>)>,
+}
+
+impl BatchReadResult {
+    /// Returns `true` if no records were found in this batch.
+    pub fn is_empty(&self) -> bool {
+        self.records.iter().all(|(_, data)| data.is_none())
+    }
+
+    /// Returns the number of records that were found.
+    pub fn found_count(&self) -> usize {
+        self.records.iter().filter(|(_, data)| data.is_some()).count()
+    }
+
+    /// Returns the number of ordinals that were not found.
+    pub fn missing_count(&self) -> usize {
+        self.records.iter().filter(|(_, data)| data.is_none()).count()
+    }
+}
 
 /// Cached per-page metadata built at open time.
 ///
@@ -80,7 +114,8 @@ struct PageIndexEntry {
 }
 
 /// Reads slabtastic files, supporting random access by ordinal,
-/// batched iteration, and streaming sink reads.
+/// batched iteration, streaming sink reads, and multi-batch concurrent
+/// reads.
 ///
 /// ## Read modes
 ///
@@ -90,6 +125,10 @@ struct PageIndexEntry {
 /// - **Sink** — [`read_all_to_sink`](Self::read_all_to_sink) writes all
 ///   records to an [`std::io::Write`] sink. For background execution with
 ///   progress polling, see [`read_to_sink_async`](Self::read_to_sink_async).
+/// - **Multi-batch** — [`multi_batch_get`](Self::multi_batch_get) submits
+///   multiple independent batch read requests for concurrent execution
+///   using scoped threads. Results are returned in submission order as
+///   [`BatchReadResult`] values with partial success for missing ordinals.
 ///
 /// ## Opening semantics
 ///
@@ -135,7 +174,7 @@ pub struct SlabReader {
 }
 
 impl SlabReader {
-    /// Open a slabtastic file for reading.
+    /// Open a slabtastic file for reading using the default namespace.
     ///
     /// Memory-maps the file, reads the trailing page to build the
     /// ordinal-to-offset index, and pre-caches per-page metadata
@@ -146,6 +185,19 @@ impl SlabReader {
     /// multi-namespace files. In the latter case the default namespace's
     /// pages page is located via the namespaces page.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::open_namespace(path, None)
+    }
+
+    /// Open a slabtastic file for reading, targeting a specific namespace.
+    ///
+    /// When `namespace_name` is `None`, the default namespace (index 1,
+    /// name `""`) is used. For single-namespace files (pages-page
+    /// terminal), this is always the case.
+    ///
+    /// When `namespace_name` is `Some(name)`, the namespaces page is
+    /// searched for a matching entry. If no match is found, an error is
+    /// returned listing the available namespaces.
+    pub fn open_namespace<P: AsRef<Path>>(path: P, namespace_name: Option<&str>) -> Result<Self> {
         let file = File::open(path)?;
 
         // Safety: the file is opened read-only and we keep the File
@@ -174,39 +226,60 @@ impl SlabReader {
         }
 
         let pages_page = if footer.page_type == PageType::Pages {
-            // Single-namespace file — read the pages page directly
+            // Single-namespace file — if user asked for a non-default
+            // namespace, that's an error.
+            if let Some(name) = namespace_name {
+                if !name.is_empty() {
+                    return Err(SlabError::InvalidFooter(format!(
+                        "namespace '{}' not found; this is a single-namespace file",
+                        name
+                    )));
+                }
+            }
             let pp_start = file_len - footer.page_size as usize;
             PagesPage::deserialize(&mmap[pp_start..file_len])?
         } else {
-            // Namespaces page — locate the default namespace's pages page
+            // Namespaces page — locate the target namespace's pages page
             let ns_start = file_len - footer.page_size as usize;
             let ns_page = Page::deserialize(&mmap[ns_start..file_len])?;
+            let ns_page_obj = NamespacesPage { page: ns_page };
+            let ns_entries = ns_page_obj.entries()?;
 
-            // Find the default namespace (index 1)
-            let mut default_pages_offset: Option<i64> = None;
-            for i in 0..ns_page.record_count() {
-                let rec = ns_page.get_record(i).unwrap();
-                if rec.len() < 10 {
-                    continue;
-                }
-                let ns_idx = rec[0];
-                let name_len = rec[1] as usize;
-                if ns_idx == 1 && name_len == 0 {
-                    let offset_bytes: [u8; 8] = rec[2 + name_len..2 + name_len + 8]
-                        .try_into()
-                        .map_err(|_| {
-                            SlabError::InvalidFooter("malformed namespace entry".to_string())
-                        })?;
-                    default_pages_offset = Some(i64::from_le_bytes(offset_bytes));
-                    break;
-                }
-            }
+            let target_entry = if let Some(name) = namespace_name {
+                // Find namespace by name
+                ns_entries.iter().find(|e| e.name == name)
+            } else {
+                // Find default namespace (index DEFAULT_NAMESPACE_INDEX, name "")
+                ns_entries.iter().find(|e| {
+                    e.namespace_index == DEFAULT_NAMESPACE_INDEX && e.name.is_empty()
+                })
+            };
 
-            let pp_offset = default_pages_offset.ok_or_else(|| {
-                SlabError::InvalidFooter(
-                    "no default namespace found in namespaces page".to_string(),
-                )
-            })? as usize;
+            let pp_offset = match target_entry {
+                Some(entry) => entry.pages_page_offset as usize,
+                None => {
+                    let available: Vec<String> = ns_entries
+                        .iter()
+                        .map(|e| {
+                            if e.name.is_empty() {
+                                format!("  index {}: (default)", e.namespace_index)
+                            } else {
+                                format!("  index {}: '{}'", e.namespace_index, e.name)
+                            }
+                        })
+                        .collect();
+                    let ns_desc = if let Some(name) = namespace_name {
+                        format!("namespace '{name}' not found")
+                    } else {
+                        "no default namespace found".to_string()
+                    };
+                    return Err(SlabError::InvalidFooter(format!(
+                        "{}. Available namespaces:\n{}",
+                        ns_desc,
+                        available.join("\n")
+                    )));
+                }
+            };
 
             // Read page_size from the pages page header
             let pp_size = u32::from_le_bytes(
@@ -255,6 +328,43 @@ impl SlabReader {
             pages_page,
             page_index,
         })
+    }
+
+    /// List all namespaces in a slabtastic file without fully opening
+    /// for reading.
+    ///
+    /// For single-namespace files (pages-page terminal), returns a single
+    /// entry for the default namespace. For multi-namespace files,
+    /// returns all entries from the namespaces page.
+    pub fn list_namespaces<P: AsRef<Path>>(path: P) -> Result<Vec<NamespaceEntry>> {
+        let file = File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file).map_err(SlabError::from)? };
+        let file_len = mmap.len();
+
+        if file_len < HEADER_SIZE + FOOTER_V1_SIZE {
+            return Err(SlabError::TruncatedPage {
+                expected: HEADER_SIZE + FOOTER_V1_SIZE,
+                actual: file_len,
+            });
+        }
+
+        let footer = Footer::read_from(&mmap[file_len - FOOTER_V1_SIZE..])?;
+
+        if footer.page_type == PageType::Pages {
+            // Single-namespace file — return default namespace entry
+            let pp_start = file_len - footer.page_size as usize;
+            Ok(vec![NamespaceEntry {
+                namespace_index: DEFAULT_NAMESPACE_INDEX,
+                name: String::new(),
+                pages_page_offset: pp_start as i64,
+            }])
+        } else if footer.page_type == PageType::Namespaces {
+            let ns_start = file_len - footer.page_size as usize;
+            let ns_page = NamespacesPage::deserialize(&mmap[ns_start..file_len])?;
+            ns_page.entries()
+        } else {
+            Err(SlabError::InvalidPageType(footer.page_type as u8))
+        }
     }
 
     /// Get a record by its ordinal value.
@@ -325,6 +435,50 @@ impl SlabReader {
         buf.clear();
         buf.extend_from_slice(data);
         Ok(())
+    }
+
+    /// Submit multiple batch read requests for concurrent execution.
+    ///
+    /// Each batch is a slice of ordinals to look up. All batches execute
+    /// concurrently using scoped threads. Results are returned in the
+    /// same order as the input batches, with each batch's records in
+    /// the same order as the requested ordinals.
+    ///
+    /// Individual ordinals that are not found produce `None` in their
+    /// position rather than failing the entire batch, enabling partial
+    /// success.
+    pub fn multi_batch_get(&self, batches: &[&[i64]]) -> Vec<BatchReadResult> {
+        if batches.len() <= 1 {
+            // Single batch or empty: skip thread spawning
+            return batches
+                .iter()
+                .map(|batch| self.execute_batch(batch))
+                .collect();
+        }
+
+        std::thread::scope(|s| {
+            let handles: Vec<_> = batches
+                .iter()
+                .map(|batch| s.spawn(|| self.execute_batch(batch)))
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect()
+        })
+    }
+
+    /// Execute a single batch of ordinal lookups, returning partial results.
+    fn execute_batch(&self, ordinals: &[i64]) -> BatchReadResult {
+        let records = ordinals
+            .iter()
+            .map(|&ord| {
+                let data = self.get(ord).ok();
+                (ord, data)
+            })
+            .collect();
+        BatchReadResult { records }
     }
 
     /// Interpolation search over the page index.
@@ -712,6 +866,125 @@ mod tests {
             assert_eq!(data, &records[i]);
         }
         assert!(iter.next_batch().unwrap().is_empty());
+    }
+
+    /// multi_batch_get with 3 batches returns correct data in order.
+    #[test]
+    fn test_multi_batch_basic() {
+        let (path, records) = write_test_file(10);
+        let reader = SlabReader::open(&path).unwrap();
+
+        let batch0: Vec<i64> = vec![0, 1, 2];
+        let batch1: Vec<i64> = vec![5, 6];
+        let batch2: Vec<i64> = vec![8, 9];
+        let results = reader.multi_batch_get(&[&batch0, &batch1, &batch2]);
+
+        assert_eq!(results.len(), 3);
+        // Batch 0
+        assert_eq!(results[0].records.len(), 3);
+        for (i, &ord) in batch0.iter().enumerate() {
+            assert_eq!(results[0].records[i].0, ord);
+            assert_eq!(results[0].records[i].1.as_deref(), Some(records[ord as usize].as_slice()));
+        }
+        // Batch 1
+        assert_eq!(results[1].records.len(), 2);
+        for (i, &ord) in batch1.iter().enumerate() {
+            assert_eq!(results[1].records[i].0, ord);
+            assert_eq!(results[1].records[i].1.as_deref(), Some(records[ord as usize].as_slice()));
+        }
+        // Batch 2
+        assert_eq!(results[2].records.len(), 2);
+        for (i, &ord) in batch2.iter().enumerate() {
+            assert_eq!(results[2].records[i].0, ord);
+            assert_eq!(results[2].records[i].1.as_deref(), Some(records[ord as usize].as_slice()));
+        }
+    }
+
+    /// multi_batch_get with mix of valid and invalid ordinals returns
+    /// None for missing and Some for found.
+    #[test]
+    fn test_multi_batch_partial_success() {
+        let (path, records) = write_test_file(5);
+        let reader = SlabReader::open(&path).unwrap();
+
+        let batch: Vec<i64> = vec![0, 999, 2, -1, 4];
+        let results = reader.multi_batch_get(&[&batch]);
+
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.records.len(), 5);
+        assert_eq!(r.records[0].1.as_deref(), Some(records[0].as_slice()));
+        assert!(r.records[1].1.is_none()); // 999 not found
+        assert_eq!(r.records[2].1.as_deref(), Some(records[2].as_slice()));
+        assert!(r.records[3].1.is_none()); // -1 not found
+        assert_eq!(r.records[4].1.as_deref(), Some(records[4].as_slice()));
+        assert_eq!(r.found_count(), 3);
+        assert_eq!(r.missing_count(), 2);
+        assert!(!r.is_empty());
+    }
+
+    /// multi_batch_get with all-invalid ordinals returns is_empty() == true.
+    #[test]
+    fn test_multi_batch_empty_result() {
+        let (path, _) = write_test_file(5);
+        let reader = SlabReader::open(&path).unwrap();
+
+        let batch: Vec<i64> = vec![100, 200, 300];
+        let results = reader.multi_batch_get(&[&batch]);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_empty());
+        assert_eq!(results[0].found_count(), 0);
+        assert_eq!(results[0].missing_count(), 3);
+    }
+
+    /// multi_batch_get preserves submission order regardless of batch size.
+    #[test]
+    fn test_multi_batch_preserves_order() {
+        let (path, records) = write_test_file(20);
+        let reader = SlabReader::open(&path).unwrap();
+
+        // Batches of different sizes — order must match submission order
+        let b0: Vec<i64> = vec![19];
+        let b1: Vec<i64> = (0..10).collect();
+        let b2: Vec<i64> = vec![15, 16, 17, 18, 19];
+        let b3: Vec<i64> = vec![5, 10];
+        let results = reader.multi_batch_get(&[&b0, &b1, &b2, &b3]);
+
+        assert_eq!(results.len(), 4);
+
+        // Verify each result corresponds to the correct batch
+        assert_eq!(results[0].records.len(), 1);
+        assert_eq!(results[0].records[0].0, 19);
+        assert_eq!(results[0].records[0].1.as_deref(), Some(records[19].as_slice()));
+
+        assert_eq!(results[1].records.len(), 10);
+        for i in 0..10 {
+            assert_eq!(results[1].records[i].0, i as i64);
+        }
+
+        assert_eq!(results[2].records.len(), 5);
+        assert_eq!(results[2].records[0].0, 15);
+
+        assert_eq!(results[3].records.len(), 2);
+        assert_eq!(results[3].records[0].0, 5);
+        assert_eq!(results[3].records[1].0, 10);
+    }
+
+    /// multi_batch_get with a single batch uses the inline optimization path.
+    #[test]
+    fn test_multi_batch_single_batch() {
+        let (path, records) = write_test_file(5);
+        let reader = SlabReader::open(&path).unwrap();
+
+        let batch: Vec<i64> = vec![0, 2, 4];
+        let results = reader.multi_batch_get(&[&batch]);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].found_count(), 3);
+        assert_eq!(results[0].records[0].1.as_deref(), Some(records[0].as_slice()));
+        assert_eq!(results[0].records[1].1.as_deref(), Some(records[2].as_slice()));
+        assert_eq!(results[0].records[2].1.as_deref(), Some(records[4].as_slice()));
     }
 
     /// read_all_to_sink writes correct data to a Vec<u8> sink.

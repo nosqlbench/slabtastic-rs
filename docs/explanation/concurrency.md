@@ -32,6 +32,23 @@ of the data (no rewriting of existing pages). If the writer may rewrite
 ordinal ranges, the reader should wait for the final pages page before
 reading.
 
+## Multi-batch concurrent reads (scoped threads)
+
+`multi_batch_get()` uses `std::thread::scope` to execute multiple batch
+read requests concurrently. Each scoped thread borrows `&self` directly
+from the caller's `SlabReader` — no `Arc` or ownership transfer needed.
+Handles are collected in submission order and joined in order, so results
+always match the input batch sequence regardless of per-thread completion
+timing.
+
+For trivial cases (0 or 1 batch), thread spawning is skipped entirely and
+the batch is processed inline on the calling thread.
+
+Each thread calls `get()` per ordinal. Missing ordinals produce `None`
+rather than an error, enabling partial success within a batch. The caller
+can inspect `BatchReadResult::is_empty()`, `found_count()`, and
+`missing_count()` to determine per-batch outcomes.
+
 ## Writer exclusivity
 
 Only one writer should operate on a file at a time. There is no built-in

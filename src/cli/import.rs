@@ -127,6 +127,7 @@ pub fn run(
     min_page_size: Option<u32>,
     page_alignment: bool,
     progress: bool,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let format = if slab_format {
         SourceFormat::Slab
@@ -154,7 +155,7 @@ pub fn run(
 
     let do_import = |target: &str| -> std::result::Result<(u64, u64), Box<dyn std::error::Error>> {
         let mut writer = if Path::new(target).exists() {
-            SlabWriter::append(target, config)?
+            SlabWriter::append_namespace(target, config, namespace.as_deref())?
         } else {
             SlabWriter::new(target, config)?
         };

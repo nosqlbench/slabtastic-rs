@@ -42,12 +42,42 @@ pub fn explain_to<W: Write>(
     w: &mut W,
     file: &str,
     pages_filter: &Option<Vec<usize>>,
-    _namespace: &Option<String>,
+    namespace: &Option<String>,
     ordinals_filter: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let reader = SlabReader::open(file)?;
     let entries = reader.page_entries();
     let _file_len = reader.file_len()?;
+
+    // Resolve namespace index filter if provided
+    let ns_index_filter: Option<u8> = match namespace {
+        Some(name) => {
+            let ns_entries = SlabReader::list_namespaces(file)?;
+            let found = ns_entries.iter().find(|e| &e.name == name);
+            match found {
+                Some(entry) => Some(entry.namespace_index),
+                None => {
+                    let available: Vec<String> = ns_entries
+                        .iter()
+                        .map(|e| {
+                            if e.name.is_empty() {
+                                format!("  index {}: (default)", e.namespace_index)
+                            } else {
+                                format!("  index {}: '{}'", e.namespace_index, e.name)
+                            }
+                        })
+                        .collect();
+                    return Err(format!(
+                        "namespace '{}' not found. Available namespaces:\n{}",
+                        name,
+                        available.join("\n")
+                    )
+                    .into());
+                }
+            }
+        }
+        None => None,
+    };
 
     // Parse ordinal range filter if provided
     let ord_range = match ordinals_filter {
@@ -55,7 +85,7 @@ pub fn explain_to<W: Write>(
         None => None,
     };
 
-    let no_filter = pages_filter.is_none() && ordinals_filter.is_none();
+    let no_filter = pages_filter.is_none() && namespace.is_none() && ordinals_filter.is_none();
 
     // Render data pages
     for (i, entry) in entries.iter().enumerate() {
@@ -67,6 +97,13 @@ pub fn explain_to<W: Write>(
         }
 
         let page = reader.read_data_page(entry)?;
+
+        // Apply namespace index filter
+        if let Some(ns_idx) = ns_index_filter {
+            if page.footer.namespace_index != ns_idx {
+                continue;
+            }
+        }
 
         // Apply ordinal range filter
         if let Some((range_start, range_end)) = ord_range {

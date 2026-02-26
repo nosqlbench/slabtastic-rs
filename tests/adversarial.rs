@@ -1999,6 +1999,7 @@ fn test_import_skip_malformed_jsonl() {
         false, // strip_newline
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 
@@ -2029,6 +2030,7 @@ fn test_import_fail_on_malformed_jsonl() {
         false, // strip_newline
         None, None, false,
         false, // progress
+        &None, // namespace
     );
     assert!(result.is_err(), "import should fail on malformed record without --skip-malformed");
 }
@@ -2058,6 +2060,7 @@ fn test_import_strip_newline() {
         true,  // strip_newline
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 
@@ -2086,6 +2089,7 @@ fn test_import_preserves_newline_by_default() {
         false, // strip_newline
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 
@@ -2121,6 +2125,7 @@ fn test_export_as_is() {
         true,  // as_is
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 
@@ -2151,6 +2156,7 @@ fn test_export_adds_newlines_by_default() {
         false, // as_is
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 
@@ -2183,6 +2189,7 @@ fn test_buffer_rename_on_rewrite() {
         out_path.to_str().unwrap(),
         None, None, false,
         false, // progress
+        &None, // namespace
     )
     .unwrap();
 

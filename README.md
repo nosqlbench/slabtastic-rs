@@ -46,6 +46,10 @@ modes:
 - **Sink read** -- `read_all_to_sink()` streams all records to any
   `Write` sink. `read_to_sink_async()` does the same on a background
   thread with a pollable progress handle.
+- **Multi-batch concurrent read** -- `multi_batch_get()` submits
+  multiple independent batch read requests for concurrent execution
+  using scoped threads. Results are returned in submission order with
+  partial success (`None` for missing ordinals).
 
 **Writing** -- three write modes:
 

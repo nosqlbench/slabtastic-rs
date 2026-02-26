@@ -39,9 +39,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::config::WriterConfig;
-use crate::constants::{FOOTER_V1_SIZE, HEADER_SIZE, PageType};
+use crate::constants::{DEFAULT_NAMESPACE_INDEX, FOOTER_V1_SIZE, HEADER_SIZE, PageType};
 use crate::error::{Result, SlabError};
 use crate::footer::Footer;
+use crate::namespaces_page::NamespacesPage;
 use crate::page::Page;
 use crate::pages_page::PagesPage;
 use crate::task::{self, SlabTask};
@@ -106,11 +107,27 @@ impl SlabWriter {
         })
     }
 
-    /// Open an existing slabtastic file for appending.
+    /// Open an existing slabtastic file for appending to the default namespace.
     ///
     /// Reads the existing pages page, then positions after the last data
     /// page so new data pages can be appended before a new pages page.
     pub fn append<P: AsRef<Path>>(path: P, config: WriterConfig) -> Result<Self> {
+        Self::append_namespace(path, config, None)
+    }
+
+    /// Open an existing slabtastic file for appending to a specific namespace.
+    ///
+    /// When `namespace_name` is `None`, appends to the default namespace
+    /// (index 1, name `""`). When `Some(name)`, finds the named namespace
+    /// in the namespaces page and appends to it.
+    ///
+    /// For single-namespace files, specifying a non-default namespace name
+    /// is an error.
+    pub fn append_namespace<P: AsRef<Path>>(
+        path: P,
+        config: WriterConfig,
+        namespace_name: Option<&str>,
+    ) -> Result<Self> {
         let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
 
         // Read the last 16 bytes to find the pages page footer
@@ -131,36 +148,53 @@ impl SlabWriter {
             return Err(SlabError::InvalidPageType(footer.page_type as u8));
         }
 
-        // If the last page is a namespaces page, locate the default
+        // If the last page is a namespaces page, locate the target
         // namespace's pages page. Otherwise read the pages page directly.
         let old_pages_page = if footer.page_type == PageType::Namespaces {
             let ns_page_offset = file_len - footer.page_size as u64;
             file.seek(SeekFrom::Start(ns_page_offset))?;
             let mut ns_buf = vec![0u8; footer.page_size as usize];
             file.read_exact(&mut ns_buf)?;
-            let ns_page = Page::deserialize(&ns_buf)?;
+            let ns_page = NamespacesPage::deserialize(&ns_buf)?;
+            let ns_entries = ns_page.entries()?;
 
-            let mut default_pp_offset: Option<i64> = None;
-            for i in 0..ns_page.record_count() {
-                let rec = ns_page.get_record(i).unwrap();
-                if rec.len() < 10 {
-                    continue;
+            let target_entry = if let Some(name) = namespace_name {
+                ns_entries.iter().find(|e| e.name == name).cloned()
+            } else {
+                ns_entries
+                    .iter()
+                    .find(|e| {
+                        e.namespace_index == DEFAULT_NAMESPACE_INDEX && e.name.is_empty()
+                    })
+                    .cloned()
+            };
+
+            let pp_offset = match target_entry {
+                Some(entry) => entry.pages_page_offset,
+                None => {
+                    let available: Vec<String> = ns_entries
+                        .iter()
+                        .map(|e| {
+                            if e.name.is_empty() {
+                                format!("  index {}: (default)", e.namespace_index)
+                            } else {
+                                format!("  index {}: '{}'", e.namespace_index, e.name)
+                            }
+                        })
+                        .collect();
+                    let ns_desc = if let Some(name) = namespace_name {
+                        format!("namespace '{name}' not found")
+                    } else {
+                        "no default namespace found".to_string()
+                    };
+                    return Err(SlabError::InvalidFooter(format!(
+                        "{}. Available namespaces:\n{}",
+                        ns_desc,
+                        available.join("\n")
+                    )));
                 }
-                let ns_idx = rec[0];
-                let name_len = rec[1] as usize;
-                if ns_idx == 1 && name_len == 0 {
-                    let offset_bytes: [u8; 8] = rec[2 + name_len..2 + name_len + 8]
-                        .try_into()
-                        .map_err(|_| SlabError::InvalidFooter(
-                            "malformed namespace entry".to_string()
-                        ))?;
-                    default_pp_offset = Some(i64::from_le_bytes(offset_bytes));
-                    break;
-                }
-            }
-            let pp_offset = default_pp_offset.ok_or_else(|| {
-                SlabError::InvalidFooter("no default namespace in namespaces page".to_string())
-            })?;
+            };
+
             file.seek(SeekFrom::Start(pp_offset as u64))?;
             let mut hdr = [0u8; HEADER_SIZE];
             file.read_exact(&mut hdr)?;
@@ -170,6 +204,15 @@ impl SlabWriter {
             file.read_exact(&mut pages_buf)?;
             PagesPage::deserialize(&pages_buf)?
         } else {
+            // Single-namespace file
+            if let Some(name) = namespace_name {
+                if !name.is_empty() {
+                    return Err(SlabError::InvalidFooter(format!(
+                        "namespace '{}' not found; this is a single-namespace file",
+                        name
+                    )));
+                }
+            }
             let pages_page_offset = file_len - footer.page_size as u64;
             file.seek(SeekFrom::Start(pages_page_offset))?;
             let mut pages_buf = vec![0u8; footer.page_size as usize];

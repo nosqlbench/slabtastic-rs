@@ -134,6 +134,42 @@ Key points:
 - The `on_complete` callback runs on the background thread.
 - `wait()` blocks until the thread finishes and returns the result.
 
+## Multi-batch concurrent read
+
+When you need to look up several independent sets of ordinals at once,
+`multi_batch_get()` runs them concurrently and returns results in
+submission order:
+
+```rust
+use slabtastic::SlabReader;
+
+fn main() -> slabtastic::Result<()> {
+    let reader = SlabReader::open("data.slab")?;
+
+    let users: Vec<i64> = vec![0, 1, 2];
+    let metadata: Vec<i64> = vec![100, 101];
+
+    let results = reader.multi_batch_get(&[&users, &metadata]);
+
+    // results[0] corresponds to `users`, results[1] to `metadata`
+    for (ordinal, data) in &results[0].records {
+        if let Some(bytes) = data {
+            println!("user ordinal {ordinal}: {} bytes", bytes.len());
+        }
+    }
+    Ok(())
+}
+```
+
+Key points:
+
+- Each batch runs on its own scoped thread (no `Arc` needed — threads
+  borrow `&self` directly).
+- Single-batch requests skip thread spawning and run inline.
+- Missing ordinals return `None` instead of failing the batch.
+- Use `is_empty()` to check if a batch found nothing, and
+  `found_count()` / `missing_count()` for per-batch statistics.
+
 ## Next steps
 
 - [Bulk Read and Write](../how-to/bulk-read-write.md) — synchronous bulk APIs

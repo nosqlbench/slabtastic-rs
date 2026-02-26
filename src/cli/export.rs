@@ -33,8 +33,9 @@ pub fn run(
     min_page_size: Option<u32>,
     page_alignment: bool,
     progress: bool,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reader = SlabReader::open(file)?;
+    let reader = SlabReader::open_namespace(file, namespace.as_deref())?;
     let records = reader.iter()?;
     let reporter = ProgressReporter::new(progress);
 

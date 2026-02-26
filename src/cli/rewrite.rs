@@ -22,10 +22,11 @@ pub fn run(
     min_page_size: Option<u32>,
     page_alignment: bool,
     progress: bool,
+    namespace: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = make_writer_config(preferred_page_size, min_page_size, page_alignment)?;
 
-    let reader = SlabReader::open(input)?;
+    let reader = SlabReader::open_namespace(input, namespace.as_deref())?;
     let mut records = reader.iter()?;
 
     // Check if already monotonic before sorting

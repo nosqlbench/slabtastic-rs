@@ -229,6 +229,10 @@ here in template form with such fields tokenized and then interpolated at error 
 When commands are creating a new slab file with import or similar, the file needs to be suffixed as `.slab.buffer` and
 only renamed (linked to) the end name once it is successfully fully written and then known to be complete (flushed).
 
+Slab commands should not assume any particular set of namespaces will be present in a slab file. Instead, if there is a
+namespaces page, then each or all namespaces should be supported, or the user should be prompted to choose one if
+necessary.
+
 ### `slab analyze <file>` (was slab info)
 
 Analyze a slabtastic file and give user stats and layout details:
@@ -436,8 +440,9 @@ ordinal-to-offset index, and returns a reader handle.
 - **Async sink read** — the reader should be able to read all records to a sink on a background
   thread, with a callback to be notified when it is done. The handle returned should implement
   a pollable progress interface (see "Async Task Model" below).
-
-## Additional reader capabilities
+- **MultiBatch read** - the reader should allow the user to submit concurrently a number of different batch requests.
+  The responses should be returned to the user in the same order. Partial success should be possible and the user should
+  be able to tell if any of the results was "empty". Internal benches for this mode need to test for order sensitivity.
 
 - Check whether a record exists for a given ordinal (existence check, not full read).
 - Return the number of data pages in the file.
@@ -641,19 +646,19 @@ library (not the binary) so that subcommand logic is directly testable.
 
 ## Library modules
 
-| Module          | Purpose                                                                   |
-|-----------------|---------------------------------------------------------------------------|
-| config          | Writer configuration and page size validation                             |
-| constants       | Magic bytes, page size limits, page type enum, footer size constants      |
-| error           | Error type and result alias                                               |
-| footer          | 16-byte v1 page footer serialize/deserialize                              |
+| Module          | Purpose                                                                                                          |
+|-----------------|------------------------------------------------------------------------------------------------------------------|
+| config          | Writer configuration and page size validation                                                                    |
+| constants       | Magic bytes, page size limits, page type enum, footer size constants                                             |
+| error           | Error type and result alias                                                                                      |
+| footer          | 16-byte v1 page footer serialize/deserialize                                                                     |
 | page            | In-memory page representation with records, offset array, and zero-copy point extraction from serialized buffers |
-| pages_page      | Pages page index serialize/deserialize                                    |
-| namespaces_page | Namespaces page serialize/deserialize                                     |
-| reader          | All read modes (zero-copy point get, batched iteration, sink read, async sink read) |
-| writer          | All write modes (single, bulk, asserted ordinal, async from iterator)     |
-| task            | Async task handle and progress polling                                    |
-| cli             | CLI subcommand implementations                                            |
+| pages_page      | Pages page index serialize/deserialize                                                                           |
+| namespaces_page | Namespaces page serialize/deserialize                                                                            |
+| reader          | All read modes (zero-copy point get, batched iteration, sink read, async sink read, multi-batch concurrent read) |
+| writer          | All write modes (single, bulk, asserted ordinal, async from iterator)                                            |
+| task            | Async task handle and progress polling                                                                           |
+| cli             | CLI subcommand implementations                                                                                   |
 
 ## CLI submodules
 
@@ -668,7 +673,7 @@ module.
 
 The library exposes: writer configuration, page type enum, error types, footer, page,
 pages page (with page entry), namespaces page (with namespace entry), reader (with batch
-iterator), async task types (task handle, progress), and writer.
+iterator and batch read result), async task types (task handle, progress), and writer.
 
 ## Dependencies
 
