@@ -84,7 +84,7 @@ impl Default for WriterConfig {
     fn default() -> Self {
         WriterConfig {
             min_page_size: MIN_PAGE_SIZE,
-            preferred_page_size: 65536,
+            preferred_page_size: 4 * 1024 * 1024,
             max_page_size: MAX_PAGE_SIZE,
             page_alignment: false,
         }
@@ -96,12 +96,12 @@ mod tests {
     use super::*;
 
     /// Verify the `Default` impl produces the expected values:
-    /// min=512, preferred=64 KiB, max=u32::MAX, alignment off.
+    /// min=512, preferred=4 MiB, max=u32::MAX, alignment off.
     #[test]
     fn test_default_config() {
         let cfg = WriterConfig::default();
         assert_eq!(cfg.min_page_size, 512);
-        assert_eq!(cfg.preferred_page_size, 65536);
+        assert_eq!(cfg.preferred_page_size, 4 * 1024 * 1024);
         assert_eq!(cfg.max_page_size, u32::MAX);
         assert!(!cfg.page_alignment);
     }
