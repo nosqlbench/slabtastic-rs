@@ -205,14 +205,13 @@ impl SlabWriter {
             PagesPage::deserialize(&pages_buf)?
         } else {
             // Single-namespace file
-            if let Some(name) = namespace_name {
-                if !name.is_empty() {
+            if let Some(name) = namespace_name
+                && !name.is_empty() {
                     return Err(SlabError::InvalidFooter(format!(
                         "namespace '{}' not found; this is a single-namespace file",
                         name
                     )));
                 }
-            }
             let pages_page_offset = file_len - footer.page_size as u64;
             file.seek(SeekFrom::Start(pages_page_offset))?;
             let mut pages_buf = vec![0u8; footer.page_size as usize];
@@ -522,8 +521,8 @@ mod tests {
         w.finish().unwrap();
 
         // Both files should yield identical records
-        let mut r_bulk = SlabReader::open(&path_bulk).unwrap();
-        let mut r_seq = SlabReader::open(&path_seq).unwrap();
+        let r_bulk = SlabReader::open(&path_bulk).unwrap();
+        let r_seq = SlabReader::open(&path_seq).unwrap();
         let all_bulk = r_bulk.iter().unwrap();
         let all_seq = r_seq.iter().unwrap();
         assert_eq!(all_bulk, all_seq);
@@ -560,7 +559,7 @@ mod tests {
         assert!(callback_called.load(Ordering::Acquire));
 
         // Verify records
-        let mut reader = SlabReader::open(&path).unwrap();
+        let reader = SlabReader::open(&path).unwrap();
         for (i, expected) in records.iter().enumerate() {
             assert_eq!(reader.get(i as i64).unwrap(), *expected);
         }
@@ -582,7 +581,7 @@ mod tests {
         w.add_record_at(2, b"two").unwrap();
         w.finish().unwrap();
 
-        let mut r = SlabReader::open(&path).unwrap();
+        let r = SlabReader::open(&path).unwrap();
         assert_eq!(r.get(0).unwrap(), b"zero");
         assert_eq!(r.get(1).unwrap(), b"one");
         assert_eq!(r.get(2).unwrap(), b"two");
@@ -625,7 +624,7 @@ mod tests {
         assert_eq!(w.next_ordinal(), 4);
         w.finish().unwrap();
 
-        let mut r = SlabReader::open(&path).unwrap();
+        let r = SlabReader::open(&path).unwrap();
         assert_eq!(r.get(0).unwrap(), b"zero");
         assert_eq!(r.get(1).unwrap(), b"one");
         assert_eq!(r.get(3).unwrap(), b"three");

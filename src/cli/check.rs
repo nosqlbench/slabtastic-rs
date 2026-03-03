@@ -137,14 +137,13 @@ pub fn run(file: &str, namespace: &Option<String>) -> Result<(), Box<dyn std::er
 
                 // Ordinal monotonicity across pages
                 let start = page.start_ordinal();
-                if let Some(prev_end) = prev_end_ordinal {
-                    if start <= prev_end {
+                if let Some(prev_end) = prev_end_ordinal
+                    && start <= prev_end {
                         errors.push(format!(
                             "page {i}: start ordinal {start} overlaps or is not after \
                              previous page end ordinal {prev_end}"
                         ));
                     }
-                }
                 if record_count > 0 {
                     prev_end_ordinal = Some(start + record_count as i64 - 1);
                 }

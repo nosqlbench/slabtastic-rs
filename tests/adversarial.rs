@@ -97,12 +97,12 @@ fn test_open_corrupted_magic() {
     // Point reads use the zero-copy path which skips magic validation
     // for performance. The record data (starting at byte 8) is intact,
     // so get() still returns the correct record.
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     let result = reader.get(0);
     assert_eq!(result.unwrap(), b"test");
 
     // Full deserialization (used by iter, check, etc.) still validates magic.
-    let mut reader2 = SlabReader::open(&path).unwrap();
+    let reader2 = SlabReader::open(&path).unwrap();
     let result2 = reader2.iter();
     assert!(result2.is_err(), "full deserialization should detect corrupted magic");
 }
@@ -337,7 +337,7 @@ fn test_record_too_large_for_max_page() {
 
 /// A 480-byte record exactly fills a 512-byte page (8 header + 480 data
 /// + 8 offsets + 16 footer = 512). Must write and read back successfully,
-/// exercising the tight-packing boundary.
+///   exercising the tight-packing boundary.
 #[test]
 fn test_record_exactly_fits_page() {
     let tmp = NamedTempFile::new().unwrap();
@@ -350,7 +350,7 @@ fn test_record_exactly_fits_page() {
     writer.add_record(&data).unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), data);
 }
 
@@ -468,7 +468,7 @@ fn test_alignment_with_various_record_sizes() {
     writer.add_record(&vec![0xDD; 400]).unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"a");
     assert_eq!(reader.get(1).unwrap(), b"bb");
     assert_eq!(reader.get(2).unwrap(), b"ccc");
@@ -538,7 +538,7 @@ fn test_multiple_appends() {
         w.finish().unwrap();
     }
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"a");
     assert_eq!(reader.get(1).unwrap(), b"b");
     assert_eq!(reader.get(2).unwrap(), b"c");
@@ -572,7 +572,7 @@ fn test_forward_traversal_matches_index() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     let entries = reader.page_entries();
     let file_len = reader.file_len().unwrap();
 
@@ -623,7 +623,7 @@ fn test_repack_preserves_all_records() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&in_path).unwrap();
+    let reader = SlabReader::open(&in_path).unwrap();
     let all = reader.iter().unwrap();
 
     let config2 = WriterConfig::default();
@@ -633,7 +633,7 @@ fn test_repack_preserves_all_records() {
     }
     writer2.finish().unwrap();
 
-    let mut reader2 = SlabReader::open(&out_path).unwrap();
+    let reader2 = SlabReader::open(&out_path).unwrap();
     for (i, expected) in records.iter().enumerate() {
         assert_eq!(reader2.get(i as i64).unwrap(), *expected);
     }
@@ -660,7 +660,7 @@ fn test_reorder_sorts_correctly() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&in_path).unwrap();
+    let reader = SlabReader::open(&in_path).unwrap();
     let mut records = reader.iter().unwrap();
     records.sort_by_key(|&(ord, _)| ord);
 
@@ -670,7 +670,7 @@ fn test_reorder_sorts_correctly() {
     }
     writer2.finish().unwrap();
 
-    let mut reader2 = SlabReader::open(&out_path).unwrap();
+    let reader2 = SlabReader::open(&out_path).unwrap();
     let all = reader2.iter().unwrap();
     for window in all.windows(2) {
         assert!(window[0].0 < window[1].0);
@@ -727,7 +727,7 @@ fn test_file_all_empty_records() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     for i in 0..100 {
         assert_eq!(reader.get(i).unwrap(), b"");
     }
@@ -750,7 +750,7 @@ fn test_single_record_file() {
     writer.add_record(b"only-one").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.page_count(), 1);
     assert_eq!(reader.get(0).unwrap(), b"only-one");
     assert!(reader.get(1).is_err());
@@ -782,7 +782,7 @@ fn test_binary_data_all_byte_values() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     for b in 0..=255u8 {
         assert_eq!(reader.get(b as i64).unwrap(), vec![b]);
     }
@@ -991,7 +991,7 @@ fn test_reader_opens_file_with_namespaces_page() {
     drop(f);
 
     // Step 5: the file now ends with a Namespaces page; open and verify
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"hello");
     assert_eq!(reader.get(1).unwrap(), b"world");
     assert!(reader.get(2).is_err());
@@ -1205,7 +1205,7 @@ fn test_import_json_roundtrip() {
     writer.finish().unwrap();
 
     assert_eq!(count, 3);
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let r0 = String::from_utf8(reader.get(0).unwrap()).unwrap();
     assert!(r0.contains("\"a\":1") || r0.contains("\"a\": 1"));
 }
@@ -1244,7 +1244,7 @@ fn test_import_jsonl_roundtrip() {
     writer.finish().unwrap();
 
     assert_eq!(count, 3);
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     assert_eq!(reader.iter().unwrap().len(), 3);
 }
 
@@ -1303,7 +1303,7 @@ fn test_import_csv_roundtrip() {
     writer.finish().unwrap();
 
     assert_eq!(count, 3); // header + 2 data rows
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let r0 = String::from_utf8(reader.get(0).unwrap()).unwrap();
     assert!(r0.contains("name"));
 }
@@ -1339,7 +1339,7 @@ fn test_import_tsv_roundtrip() {
     writer.finish().unwrap();
 
     assert_eq!(count, 2);
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let r0 = String::from_utf8(reader.get(0).unwrap()).unwrap();
     assert!(r0.contains("col1\tcol2"));
 }
@@ -1392,7 +1392,7 @@ fn test_import_yaml_roundtrip() {
     writer.finish().unwrap();
 
     assert_eq!(count, 2);
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let r0 = String::from_utf8(reader.get(0).unwrap()).unwrap();
     assert!(r0.contains("Alice"));
 }
@@ -1472,7 +1472,7 @@ fn test_export_text_no_double_newline() {
     let out_path = tmp_out.path().to_path_buf();
 
     // Simulate text export
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let records = reader.iter().unwrap();
     let mut sink = std::fs::File::create(&out_path).unwrap();
     for (_ord, data) in &records {
@@ -1502,7 +1502,7 @@ fn test_export_cstrings_no_double_null() {
     let tmp_out = NamedTempFile::new().unwrap();
     let out_path = tmp_out.path().to_path_buf();
 
-    let mut reader = SlabReader::open(&slab_path).unwrap();
+    let reader = SlabReader::open(&slab_path).unwrap();
     let records = reader.iter().unwrap();
     let mut sink = std::fs::File::create(&out_path).unwrap();
     for (_ord, data) in &records {
@@ -1535,7 +1535,7 @@ fn test_export_slab_to_slab_roundtrip() {
     let out_path = tmp_out.path().to_path_buf();
     std::fs::remove_file(&out_path).ok();
 
-    let mut reader = SlabReader::open(&in_path).unwrap();
+    let reader = SlabReader::open(&in_path).unwrap();
     let records = reader.iter().unwrap();
     let mut writer2 = SlabWriter::new(&out_path, config).unwrap();
     for (_ord, data) in &records {
@@ -1543,7 +1543,7 @@ fn test_export_slab_to_slab_roundtrip() {
     }
     writer2.finish().unwrap();
 
-    let mut reader2 = SlabReader::open(&out_path).unwrap();
+    let reader2 = SlabReader::open(&out_path).unwrap();
     for i in 0..20 {
         assert_eq!(
             reader2.get(i).unwrap(),
@@ -1564,7 +1564,7 @@ fn test_export_empty_slab() {
     let mut writer = SlabWriter::new(&path, config).unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     let records = reader.iter().unwrap();
     assert!(records.is_empty(), "empty slab should have 0 records");
 }
@@ -1586,8 +1586,7 @@ fn test_footer_odd_footer_length() {
     // A stricter implementation would reject non-multiples.
     let result = Footer::read_from(&buf);
     // Accept either success or error here — document the behavior
-    if result.is_ok() {
-        let decoded = result.unwrap();
+    if let Ok(decoded) = result {
         assert_eq!(decoded.footer_length, 17);
     }
     // Either way, the test exercises this path
@@ -1673,7 +1672,7 @@ fn test_writer_ordinal_correct_sequence() {
     writer.add_record_at(2, b"two").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"zero");
     assert_eq!(reader.get(1).unwrap(), b"one");
     assert_eq!(reader.get(2).unwrap(), b"two");
@@ -1713,7 +1712,7 @@ fn test_corrupted_header_page_size_zero() {
 
     // The reader reads from the end (footer), so it may still open.
     // But trying to read the first data page should fail.
-    if let Ok(mut reader) = SlabReader::open(&path) {
+    if let Ok(reader) = SlabReader::open(&path) {
         let result = reader.get(0);
         assert!(result.is_err(), "corrupted page_size=0 should fail on read");
     }
@@ -2003,7 +2002,7 @@ fn test_import_skip_malformed_jsonl() {
     )
     .unwrap();
 
-    let mut reader = SlabReader::open(&target_path).unwrap();
+    let reader = SlabReader::open(&target_path).unwrap();
     let records = reader.iter().unwrap();
     assert_eq!(records.len(), 2, "should import 2 valid records, skipping the malformed one");
 }
@@ -2064,7 +2063,7 @@ fn test_import_strip_newline() {
     )
     .unwrap();
 
-    let mut reader = SlabReader::open(&target_path).unwrap();
+    let reader = SlabReader::open(&target_path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"hello");
     assert_eq!(reader.get(1).unwrap(), b"world");
 }
@@ -2093,7 +2092,7 @@ fn test_import_preserves_newline_by_default() {
     )
     .unwrap();
 
-    let mut reader = SlabReader::open(&target_path).unwrap();
+    let reader = SlabReader::open(&target_path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"hello\n");
     assert_eq!(reader.get(1).unwrap(), b"world\n");
 }
@@ -2117,16 +2116,19 @@ fn test_export_as_is() {
     let out = NamedTempFile::new().unwrap();
     let out_path = out.path().to_path_buf();
 
-    slabtastic::cli::export::run(
-        slab_path.to_str().unwrap(),
-        Some(out_path.to_str().unwrap()),
-        true,  // text
-        false, false,
-        true,  // as_is
-        None, None, false,
-        false, // progress
-        &None, // namespace
-    )
+    slabtastic::cli::export::run(&slabtastic::cli::export::ExportConfig {
+        file: slab_path.to_str().unwrap(),
+        output: Some(out_path.to_str().unwrap()),
+        format_text: true,
+        format_cstrings: false,
+        format_slab: false,
+        as_is: true,
+        preferred_page_size: None,
+        min_page_size: None,
+        page_alignment: false,
+        progress: false,
+        namespace: &None,
+    })
     .unwrap();
 
     let exported = std::fs::read(&out_path).unwrap();
@@ -2148,16 +2150,19 @@ fn test_export_adds_newlines_by_default() {
     let out = NamedTempFile::new().unwrap();
     let out_path = out.path().to_path_buf();
 
-    slabtastic::cli::export::run(
-        slab_path.to_str().unwrap(),
-        Some(out_path.to_str().unwrap()),
-        true,  // text
-        false, false,
-        false, // as_is
-        None, None, false,
-        false, // progress
-        &None, // namespace
-    )
+    slabtastic::cli::export::run(&slabtastic::cli::export::ExportConfig {
+        file: slab_path.to_str().unwrap(),
+        output: Some(out_path.to_str().unwrap()),
+        format_text: true,
+        format_cstrings: false,
+        format_slab: false,
+        as_is: false,
+        preferred_page_size: None,
+        min_page_size: None,
+        page_alignment: false,
+        progress: false,
+        namespace: &None,
+    })
     .unwrap();
 
     let exported = std::fs::read(&out_path).unwrap();
@@ -2204,7 +2209,7 @@ fn test_buffer_rename_on_rewrite() {
     );
 
     // Verify content
-    let mut reader = SlabReader::open(&out_path).unwrap();
+    let reader = SlabReader::open(&out_path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"hello");
 }
 
@@ -2257,7 +2262,7 @@ fn test_reader_error_carries_offset_context() {
                 "error should include file offset context: {err_msg}"
             );
         }
-        Ok(mut reader) => {
+        Ok(reader) => {
             let result = reader.get(0);
             assert!(result.is_err());
             let err_msg = format!("{}", result.unwrap_err());

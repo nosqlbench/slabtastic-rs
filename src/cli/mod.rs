@@ -265,7 +265,7 @@ impl ProgressReporter {
                     if elapsed >= Duration::from_secs(1)
                         || current - last_printed >= 1_000_000
                     {
-                        let _ = eprint!("\r\x1b[2K{current} records processed...");
+                        eprint!("\r\x1b[2K{current} records processed...");
                         let _ = std::io::stderr().flush();
                         last_printed = current;
                         last_time = Instant::now();
@@ -275,7 +275,7 @@ impl ProgressReporter {
                     }
                 }
                 let final_count = c.load(Ordering::Relaxed);
-                let _ = eprintln!("\r\x1b[2K{final_count} records processed.");
+                eprintln!("\r\x1b[2K{final_count} records processed.");
             }))
         } else {
             None
@@ -435,19 +435,19 @@ pub fn run(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
             page_alignment,
             progress,
             namespace,
-        } => export::run(
-            &file,
-            output.as_deref(),
-            text,
-            cstrings,
-            slab_format,
+        } => export::run(&export::ExportConfig {
+            file: &file,
+            output: output.as_deref(),
+            format_text: text,
+            format_cstrings: cstrings,
+            format_slab: slab_format,
             as_is,
             preferred_page_size,
             min_page_size,
             page_alignment,
             progress,
-            &namespace,
-        )?,
+            namespace: &namespace,
+        })?,
         Command::Rewrite {
             input,
             output,

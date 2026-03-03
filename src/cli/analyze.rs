@@ -144,7 +144,7 @@ pub fn run(
         ((total_records as f64 * pct / 100.0).ceil() as usize).max(1)
     } else {
         let one_pct = (total_records as f64 * 0.01).ceil() as usize;
-        one_pct.min(1000).max(1)
+        one_pct.clamp(1, 1000)
     };
     let actual_sample = sample_count.min(record_sizes.len());
 
@@ -218,7 +218,7 @@ fn print_stats(values: &[usize], unit: &str) {
     if max > min {
         let bucket_width = ((max - min) as f64 / 5.0).ceil() as usize;
         if bucket_width > 0 {
-            let mut buckets = vec![0usize; 5];
+            let mut buckets = [0usize; 5];
             for &v in &sorted {
                 let idx = ((v - min) / bucket_width).min(4);
                 buckets[idx] += 1;

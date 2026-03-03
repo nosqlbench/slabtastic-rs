@@ -85,7 +85,7 @@ fn write_and_verify(label: &str, count: u64) {
 
     // -- Sequential read phase -----------------------------------------
     let start = Instant::now();
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     let all = reader.iter().unwrap();
     let read_elapsed = start.elapsed();
 
@@ -114,7 +114,7 @@ fn write_and_verify(label: &str, count: u64) {
     // -- Random-access read phase (10k samples) ------------------------
     let sample_count = 10_000u64.min(count);
     let start = Instant::now();
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     for i in 0..sample_count {
         let ordinal = ((i * 7919) % count) as i64;
         let data = reader.get(ordinal).unwrap();

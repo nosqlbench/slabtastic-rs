@@ -13,40 +13,55 @@ use crate::{SlabReader, SlabWriter};
 
 use super::{make_writer_config, write_with_buffer_rename, ProgressReporter};
 
+/// Configuration for the `export` subcommand.
+pub struct ExportConfig<'a> {
+    /// Input slab file path.
+    pub file: &'a str,
+    /// Output path; `None` writes to stdout.
+    pub output: Option<&'a str>,
+    /// Force text (newline-delimited) format.
+    pub format_text: bool,
+    /// Force cstrings (null-terminated) format.
+    pub format_cstrings: bool,
+    /// Force slab format.
+    pub format_slab: bool,
+    /// When `true`, write records exactly as stored without adding
+    /// trailing newlines or null terminators.
+    pub as_is: bool,
+    /// Preferred page size for slab output.
+    pub preferred_page_size: Option<u32>,
+    /// Minimum page size for slab output.
+    pub min_page_size: Option<u32>,
+    /// Whether to align pages in slab output.
+    pub page_alignment: bool,
+    /// Whether to report progress on stderr.
+    pub progress: bool,
+    /// Optional namespace filter.
+    pub namespace: &'a Option<String>,
+}
+
 /// Run the `export` subcommand.
 ///
-/// Exports all records from `file` in the specified format. When `output`
-/// is `None`, records are written to stdout.
+/// Exports all records from the input file in the specified format.
+/// When `output` is `None`, records are written to stdout.
 ///
 /// When `as_is` is `true`, records are written exactly as stored without
 /// adding missing newlines or null terminators. By default
 /// (`as_is = false`), text mode adds a trailing newline if the record
 /// does not already end with one.
-pub fn run(
-    file: &str,
-    output: Option<&str>,
-    format_text: bool,
-    format_cstrings: bool,
-    format_slab: bool,
-    as_is: bool,
-    preferred_page_size: Option<u32>,
-    min_page_size: Option<u32>,
-    page_alignment: bool,
-    progress: bool,
-    namespace: &Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let reader = SlabReader::open_namespace(file, namespace.as_deref())?;
+pub fn run(cfg: &ExportConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let reader = SlabReader::open_namespace(cfg.file, cfg.namespace.as_deref())?;
     let records = reader.iter()?;
-    let reporter = ProgressReporter::new(progress);
+    let reporter = ProgressReporter::new(cfg.progress);
 
     // Determine output format
-    let format = if format_slab {
+    let format = if cfg.format_slab {
         ExportFormat::Slab
-    } else if format_cstrings {
+    } else if cfg.format_cstrings {
         ExportFormat::Cstrings
-    } else if format_text {
+    } else if cfg.format_text {
         ExportFormat::Text
-    } else if let Some(out) = output {
+    } else if let Some(out) = cfg.output {
         detect_format_from_extension(out)
     } else {
         ExportFormat::Text
@@ -54,9 +69,9 @@ pub fn run(
 
     match format {
         ExportFormat::Slab => {
-            let out_path = output.ok_or("slab export format requires --output")?;
+            let out_path = cfg.output.ok_or("slab export format requires --output")?;
             let config =
-                make_writer_config(preferred_page_size, min_page_size, page_alignment)?;
+                make_writer_config(cfg.preferred_page_size, cfg.min_page_size, cfg.page_alignment)?;
             let record_count = records.len();
             write_with_buffer_rename(out_path, |buf_path| {
                 let mut writer = SlabWriter::new(buf_path, config)?;
@@ -70,36 +85,36 @@ pub fn run(
             eprintln!("Exported {} records to {out_path} (slab)", record_count);
         }
         ExportFormat::Text => {
-            let mut sink: Box<dyn Write> = match output {
+            let mut sink: Box<dyn Write> = match cfg.output {
                 Some(path) => Box::new(std::fs::File::create(path)?),
                 None => Box::new(io::stdout().lock()),
             };
             for (_ordinal, data) in &records {
                 sink.write_all(data)?;
-                if !as_is && !data.ends_with(b"\n") {
+                if !cfg.as_is && !data.ends_with(b"\n") {
                     sink.write_all(b"\n")?;
                 }
                 reporter.inc();
             }
             sink.flush()?;
-            if let Some(path) = output {
+            if let Some(path) = cfg.output {
                 eprintln!("Exported {} records to {path} (text)", records.len());
             }
         }
         ExportFormat::Cstrings => {
-            let mut sink: Box<dyn Write> = match output {
+            let mut sink: Box<dyn Write> = match cfg.output {
                 Some(path) => Box::new(std::fs::File::create(path)?),
                 None => Box::new(io::stdout().lock()),
             };
             for (_ordinal, data) in &records {
                 sink.write_all(data)?;
-                if !as_is && !data.ends_with(b"\0") {
+                if !cfg.as_is && !data.ends_with(b"\0") {
                     sink.write_all(b"\0")?;
                 }
                 reporter.inc();
             }
             sink.flush()?;
-            if let Some(path) = output {
+            if let Some(path) = cfg.output {
                 eprintln!("Exported {} records to {path} (cstrings)", records.len());
             }
         }

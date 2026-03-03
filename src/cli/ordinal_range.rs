@@ -22,11 +22,10 @@ pub fn parse_ordinal_range(s: &str) -> Result<(i64, i64), String> {
     let s = s.trim();
 
     // Single number: n → [0, n)
-    if let Ok(n) = s.parse::<i64>() {
-        if !s.starts_with('[') && !s.starts_with('(') {
+    if let Ok(n) = s.parse::<i64>()
+        && !s.starts_with('[') && !s.starts_with('(') {
             return Ok((0, n));
         }
-    }
 
     // [n] — single ordinal
     if s.starts_with('[') && s.ends_with(']') && !s.contains(',') && !s.contains("..") {

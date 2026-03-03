@@ -53,11 +53,11 @@ use tempfile::NamedTempFile;
 
 /// Format a count as a compact human-readable string (e.g. 1_000_000 → "1M").
 fn human(n: u64) -> String {
-    if n >= 1_000_000_000 && n % 1_000_000_000 == 0 {
+    if n >= 1_000_000_000 && n.is_multiple_of(1_000_000_000) {
         format!("{}B", n / 1_000_000_000)
-    } else if n >= 1_000_000 && n % 1_000_000 == 0 {
+    } else if n >= 1_000_000 && n.is_multiple_of(1_000_000) {
         format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 && n % 1_000 == 0 {
+    } else if n >= 1_000 && n.is_multiple_of(1_000) {
         format!("{}k", n / 1_000)
     } else {
         n.to_string()
@@ -185,7 +185,7 @@ fn bench_random_read(c: &mut Criterion) {
         group.throughput(Throughput::Elements(sample_count));
         group.bench_with_input(
             BenchmarkId::new(
-                &format!("{}_gets_in", human(sample_count)),
+                format!("{}_gets_in", human(sample_count)),
                 human(count),
             ),
             &ordinals,
@@ -240,7 +240,7 @@ fn bench_concurrent_random_read(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total_reads));
         group.bench_with_input(
             BenchmarkId::new(
-                &format!(
+                format!(
                     "{}t_x_{}_gets_in_{}",
                     n_threads,
                     human(reads_per_thread),
@@ -313,7 +313,7 @@ fn bench_concurrent_sequential_read(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total));
         group.bench_with_input(
             BenchmarkId::new(
-                &format!(
+                format!(
                     "{}t_x_{}_records",
                     n_threads,
                     human(record_count),
@@ -331,7 +331,7 @@ fn bench_concurrent_sequential_read(c: &mut Criterion) {
                     |readers| {
                         let handles: Vec<_> = readers
                             .into_iter()
-                            .map(|mut reader| {
+                            .map(|reader| {
                                 thread::spawn(move || {
                                     let records = reader.iter().unwrap();
                                     assert!(!records.is_empty());
@@ -368,7 +368,7 @@ fn bench_concurrent_write(c: &mut Criterion) {
         group.throughput(Throughput::Elements(total));
         group.bench_with_input(
             BenchmarkId::new(
-                &format!(
+                format!(
                     "{}t_x_{}_records",
                     n_threads,
                     human(records_per_thread),
@@ -436,7 +436,7 @@ fn bench_batch_iter(c: &mut Criterion) {
         group.throughput(Throughput::Elements(count));
         group.bench_with_input(
             BenchmarkId::new(
-                &format!("{}_records_batch{}", human(count), batch_size),
+                format!("{}_records_batch{}", human(count), batch_size),
                 batch_size,
             ),
             &batch_size,
@@ -484,7 +484,7 @@ fn bench_read_all_to_sink(c: &mut Criterion) {
             |b, &_count| {
                 b.iter_batched(
                     || SlabReader::open(&path).unwrap(),
-                    |mut reader| {
+                    |reader| {
                         let mut sink = Vec::new();
                         let n = reader.read_all_to_sink(&mut sink).unwrap();
                         assert!(n > 0);
@@ -578,7 +578,8 @@ fn bench_bulk_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("bulk_write");
     group.sample_size(10);
 
-    for count in [1_000_000u64] {
+    {
+        let count = 1_000_000u64;
         let records: Vec<Vec<u8>> = (0..count).map(make_record).collect();
         let refs: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
 
@@ -638,7 +639,7 @@ fn bench_multi_batch_read(c: &mut Criterion) {
 
         group.bench_with_input(
             BenchmarkId::new(
-                &format!(
+                format!(
                     "{}b_x_{}_in_{}",
                     n_batches,
                     human(ordinals_per_batch),

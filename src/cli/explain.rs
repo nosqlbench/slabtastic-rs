@@ -90,20 +90,18 @@ pub fn explain_to<W: Write>(
     // Render data pages
     for (i, entry) in entries.iter().enumerate() {
         // Apply page index filter
-        if let Some(indices) = pages_filter {
-            if !indices.contains(&i) {
+        if let Some(indices) = pages_filter
+            && !indices.contains(&i) {
                 continue;
             }
-        }
 
         let page = reader.read_data_page(entry)?;
 
         // Apply namespace index filter
-        if let Some(ns_idx) = ns_index_filter {
-            if page.footer.namespace_index != ns_idx {
+        if let Some(ns_idx) = ns_index_filter
+            && page.footer.namespace_index != ns_idx {
                 continue;
             }
-        }
 
         // Apply ordinal range filter
         if let Some((range_start, range_end)) = ord_range {

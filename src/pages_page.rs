@@ -103,14 +103,23 @@ impl PagesPage {
     }
 
     /// Add an entry mapping a start ordinal to a file offset.
+    ///
+    /// Entries must be added in non-decreasing `start_ordinal` order (which
+    /// is the natural order during sequential writes). The sorted invariant
+    /// is maintained by insertion order alone — no sort is performed.
     pub fn add_entry(&mut self, start_ordinal: i64, file_offset: i64) {
         let entry = PageEntry {
             start_ordinal,
             file_offset,
         };
         self.page.add_record(&entry.to_bytes());
+        debug_assert!(
+            self.sorted_entries.last().is_none_or(|prev| prev.start_ordinal <= start_ordinal),
+            "add_entry called out of order: last={}, new={}",
+            self.sorted_entries.last().unwrap().start_ordinal,
+            start_ordinal,
+        );
         self.sorted_entries.push(entry);
-        self.sorted_entries.sort_by_key(|e| e.start_ordinal);
     }
 
     /// Return the cached entries (sorted by `start_ordinal`).

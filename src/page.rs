@@ -64,6 +64,9 @@ pub struct Page {
     pub footer: Footer,
     /// The raw record data blobs.
     pub records: Vec<Vec<u8>>,
+    /// Running total of record byte lengths (maintained incrementally to
+    /// avoid re-summing on every `serialized_size()` call).
+    record_data_len: usize,
 }
 
 impl Page {
@@ -72,20 +75,21 @@ impl Page {
         Page {
             footer: Footer::new(start_ordinal, 0, 0, page_type),
             records: Vec::new(),
+            record_data_len: 0,
         }
     }
 
     /// Append a record to this page.
     pub fn add_record(&mut self, data: &[u8]) {
+        self.record_data_len += data.len();
         self.records.push(data.to_vec());
         self.footer.record_count = self.records.len() as u32;
     }
 
     /// Compute the total serialized size of this page.
     pub fn serialized_size(&self) -> usize {
-        let record_data_len: usize = self.records.iter().map(|r| r.len()).sum();
         let offset_count = self.records.len() + 1;
-        HEADER_SIZE + record_data_len + (offset_count * 4) + FOOTER_V1_SIZE
+        HEADER_SIZE + self.record_data_len + (offset_count * 4) + FOOTER_V1_SIZE
     }
 
     /// Serialize this page to a byte vector.
@@ -135,7 +139,7 @@ impl Page {
         }
 
         // Validate magic
-        if &buf[0..4] != &MAGIC {
+        if buf[0..4] != MAGIC {
             return Err(SlabError::InvalidMagic);
         }
 
@@ -184,6 +188,7 @@ impl Page {
             records.push(buf[start..end].to_vec());
         }
 
+        let record_data_len: usize = records.iter().map(|r| r.len()).sum();
         Ok(Page {
             footer: Footer::new(
                 footer.start_ordinal,
@@ -192,6 +197,7 @@ impl Page {
                 footer.page_type,
             ),
             records,
+            record_data_len,
         })
     }
 

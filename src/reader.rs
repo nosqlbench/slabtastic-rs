@@ -228,14 +228,13 @@ impl SlabReader {
         let pages_page = if footer.page_type == PageType::Pages {
             // Single-namespace file — if user asked for a non-default
             // namespace, that's an error.
-            if let Some(name) = namespace_name {
-                if !name.is_empty() {
+            if let Some(name) = namespace_name
+                && !name.is_empty() {
                     return Err(SlabError::InvalidFooter(format!(
                         "namespace '{}' not found; this is a single-namespace file",
                         name
                     )));
                 }
-            }
             let pp_start = file_len - footer.page_size as usize;
             PagesPage::deserialize(&mmap[pp_start..file_len])?
         } else {
@@ -528,11 +527,10 @@ impl SlabReader {
             // Guess overshot — scan left
             let start = guess.saturating_sub(MAX_SCAN);
             for i in (start..guess).rev() {
-                if entries[i].start_ordinal <= ordinal {
-                    if i + 1 >= len || entries[i + 1].start_ordinal > ordinal {
+                if entries[i].start_ordinal <= ordinal
+                    && (i + 1 >= len || entries[i + 1].start_ordinal > ordinal) {
                         return Some(i);
                     }
-                }
             }
         }
 
@@ -734,7 +732,7 @@ impl SlabBatchIter {
                 if self.page_idx >= self.entries.len() {
                     break;
                 }
-                let entry = self.entries[self.page_idx].clone();
+                let entry = self.entries[self.page_idx];
                 let page = self.read_data_page(&entry)?;
                 self.current_page = Some(page);
                 self.record_idx = 0;
@@ -797,7 +795,7 @@ mod tests {
         writer.add_record(b"gamma").unwrap();
         writer.finish().unwrap();
 
-        let mut reader = SlabReader::open(&path).unwrap();
+        let reader = SlabReader::open(&path).unwrap();
         assert_eq!(reader.get(0).unwrap(), b"alpha");
         assert_eq!(reader.get(1).unwrap(), b"beta");
         assert_eq!(reader.get(2).unwrap(), b"gamma");
@@ -991,7 +989,7 @@ mod tests {
     #[test]
     fn test_read_all_to_sink() {
         let (path, records) = write_test_file(4);
-        let mut reader = SlabReader::open(&path).unwrap();
+        let reader = SlabReader::open(&path).unwrap();
         let mut sink: Vec<u8> = Vec::new();
         let count = reader.read_all_to_sink(&mut sink).unwrap();
         assert_eq!(count, 4);

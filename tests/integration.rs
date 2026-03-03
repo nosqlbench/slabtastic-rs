@@ -34,7 +34,7 @@ fn test_write_then_read() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     for (i, expected) in records.iter().enumerate() {
         let actual = reader.get(i as i64).unwrap();
         assert_eq!(&actual, expected, "mismatch at ordinal {i}");
@@ -58,7 +58,7 @@ fn test_iterate_all_records() {
     writer.add_record(b"third").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     let all = reader.iter().unwrap();
     assert_eq!(all.len(), 3);
     assert_eq!(all[0], (0, b"first".to_vec()));
@@ -92,7 +92,7 @@ fn test_append_mode() {
     writer.finish().unwrap();
 
     // Read all back
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"alpha");
     assert_eq!(reader.get(1).unwrap(), b"beta");
     assert_eq!(reader.get(2).unwrap(), b"gamma");
@@ -116,7 +116,7 @@ fn test_ordinal_not_found() {
     writer.add_record(b"only").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert!(reader.contains(0));
     assert!(!reader.contains(1));
     assert!(!reader.contains(-1));
@@ -149,7 +149,7 @@ fn test_page_alignment() {
     let file_len = metadata.len();
     // The data page should be aligned to 512 bytes
     // We can at least check the file has proper structure
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"short");
 
     // Data page should be a multiple of 512
@@ -192,7 +192,7 @@ fn test_large_records() {
     writer.add_record(b"small").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), big_data);
     assert_eq!(reader.get(1).unwrap(), b"small");
 }
@@ -214,7 +214,7 @@ fn test_empty_records() {
     writer.add_record(b"").unwrap();
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert_eq!(reader.get(0).unwrap(), b"");
     assert_eq!(reader.get(1).unwrap(), b"nonempty");
     assert_eq!(reader.get(2).unwrap(), b"");
@@ -243,7 +243,7 @@ fn test_many_records_multi_page() {
     }
     writer.finish().unwrap();
 
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     assert!(reader.page_count() > 1, "expected multiple pages");
 
     for i in 0..count {
@@ -352,7 +352,7 @@ fn test_async_write_with_progress() {
     assert_eq!(reported_count.load(Ordering::Acquire), 50);
 
     // Verify records are readable
-    let mut reader = SlabReader::open(&path).unwrap();
+    let reader = SlabReader::open(&path).unwrap();
     for (i, expected) in records.iter().enumerate() {
         assert_eq!(reader.get(i as i64).unwrap(), *expected);
     }
